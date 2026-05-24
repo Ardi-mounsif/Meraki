@@ -1,20 +1,18 @@
-# استخدام f- لضمان الخروج بـ 1 في حالة فشل الطلب
-# استخدام v- لرؤية تفاصيل الاتصال (نقصها إيلا ما بغيتيش التلخيص)
-RESPONSE=$(curl -sf -H "X-Cisco-Meraki-API-Key: $MERAKI_API_KEY" "https://api.meraki.com/api/v1/organizations/$MERAKI_ORG_ID/policyObjects/groups")
+name: Cleanup and Rebuild IP Blacklist
 
-if [ $? -ne 0 ]; then
-  echo "Error: API request failed"
-  exit 1
-fi
+on: 
+  workflow_dispatch:
 
-# تحويل JSON لـ Array والتحقق من صحته
-if ! echo "$RESPONSE" | jq -e . > /dev/null 2>&1; then
-  echo "Error: Invalid JSON response"
-  exit 1
-fi
-
-# معالجة المصفوفة
-# مثال: استخراج قائمة الـ IDs
-IDS=$(echo "$RESPONSE" | jq -r '.[].id')
-
-echo "Groups retrieved successfully."
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Delete All Groups
+      env:
+        MERAKI_API_KEY: ${{ secrets.MERAKI_API_KEY }}
+        MERAKI_ORG_ID: ${{ secrets.MERAKI_ORG_ID }}
+      run: |
+        # جيب المجموعات وتأكد أن النتيجة مصفوفة صحيحة قبل المعالجة
+        GROUPS=$(curl -s -H "X-Cisco-Meraki-API-Key: $MERAKI_API_KEY" "https://api.meraki.com/api/v1/organizations/$MERAKI_ORG_ID/policyObjects/groups")
+        
+        # تحقق واش المتغير ماشي
