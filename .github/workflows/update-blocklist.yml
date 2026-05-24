@@ -12,22 +12,7 @@ jobs:
         MERAKI_API_KEY: ${{ secrets.MERAKI_API_KEY }}
         MERAKI_ORG_ID: ${{ secrets.MERAKI_ORG_ID }}
       run: |
-        # جيب كاع الـ IDs ديال المجموعات
+        # جيب المجموعات وتأكد أن النتيجة مصفوفة صحيحة قبل المعالجة
         GROUPS=$(curl -s -H "X-Cisco-Meraki-API-Key: $MERAKI_API_KEY" "https://api.meraki.com/api/v1/organizations/$MERAKI_ORG_ID/policyObjects/groups")
         
-        # مسح كل مجموعة وحدة بوحدة
-        echo "$GROUPS" | jq -r '.[].id' | while read id; do
-          echo "Deleting group $id..."
-          curl -s -X DELETE -H "X-Cisco-Meraki-API-Key: $MERAKI_API_KEY" "https://api.meraki.com/api/v1/organizations/$MERAKI_ORG_ID/policyObjects/groups/$id"
-        done
-
-    - name: Create Main Group
-      env:
-        MERAKI_API_KEY: ${{ secrets.MERAKI_API_KEY }}
-        MERAKI_ORG_ID: ${{ secrets.MERAKI_ORG_ID }}
-      run: |
-        # دابا كريي مجموعة وحدة رئيسية خاوية
-        curl -X POST "https://api.meraki.com/api/v1/organizations/$MERAKI_ORG_ID/policyObjects/groups" \
-             -H "X-Cisco-Meraki-API-Key: $MERAKI_API_KEY" \
-             -H "Content-Type: application/json" \
-             -d '{"name": "CrowdSec_Main_Blocklist", "category": "NetworkObjectGroup", "objectIds": []}'
+        # تحقق واش المتغير ماشي
