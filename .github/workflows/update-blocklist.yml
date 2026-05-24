@@ -1,73 +1,118 @@
-- name: Create and run sync script
-  env:
-    MERAKI_API_KEY: ${{ secrets.MERAKI_API_KEY }}
-    MERAKI_NETWORK_ID: ${{ secrets.MERAKI_NETWORK_ID }}
-  run: |
-    cat > sync.py << 'EOF'
-    import requests
-    import ipaddress
-    import os
+name: CrowdSec to Meraki MX67
 
-    BLOCKLIST_URL = "https://raw.githubusercontent.com/LittleJake/ip-blacklist/refs/heads/main/ustc_blacklist_ip.txt"
+on:
+  workflow_dispatch:
 
-    API_KEY = os.environ["MERAKI_API_KEY"]
-    NETWORK_ID = os.environ["MERAKI_NETWORK_ID"]
+  schedule:
+    - cron: "0 * * * *"
 
-    headers = {
-        "X-Cisco-Meraki-API-Key": API_KEY,
-        "Content-Type": "application/json"
-    }
+jobs:
+  sync:
+    runs-on: ubuntu-latest
 
-    data = requests.get(BLOCKLIST_URL, timeout=60).text.splitlines()
+    steps:
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
-    ips = []
-    for line in data:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            ips.append(ipaddress.ip_network(f"{line}/32"))
-        except:
-            pass
+      - name: Install dependencies
+        run: |
+          pip install requests
 
-    collapsed = list(ipaddress.collapse_addresses(ips))
+      - name: Sync CrowdSec IPs to Meraki
+        env:
+          MERAKI_API_KEY: ${{ secrets.MERAKI_API_KEY }}
+          MERAKI_NETWORK_ID: ${{ secrets.MERAKI_NETWORK_ID }}
+        run: |
+          cat > sync.py << 'EOF'
+          import os
+          import ipaddress
+          import requests
 
-    rules = []
-    for net in collapsed[:200]:
-        rules.append({
-            "comment": "CrowdSec",
-            "policy": "deny",
-            "protocol": "any",
-            "srcPort": "Any",
-            "srcCidr": str(net),
-            "destPort": "Any",
-            "destCidr": "Any",
-            "syslogEnabled": False
-        })
+          BLOCKLIST_URL = "https://raw.githubusercontent.com/LittleJake/ip-blacklist/refs/heads/main/ustc_blacklist_ip.txt"
 
-    rules.append({
-        "comment": "Default",
-        "policy": "allow",
-        "protocol": "any",
-        "srcPort": "Any",
-        "srcCidr": "Any",
-        "destPort": "Any",
-        "destCidr": "Any",
-        "syslogEnabled": False
-    })
+          API_KEY = os.environ["MERAKI_API_KEY"]
+          NETWORK_ID = os.environ["MERAKI_NETWORK_ID"]
 
-    url = f"https://api.meraki.com/api/v1/networks/{NETWORK_ID}/appliance/firewall/l3FirewallRules"
+          headers = {
+              "X-Cisco-Meraki-API-Key": API_KEY,
+              "Content-Type": "application/json"
+          }
 
-    r = requests.put(
-        url,
-        headers=headers,
-        json={"rules": rules},
-        timeout=120
-    )
+          print("Downloading blocklist...")
 
-    print(r.status_code)
-    print(r.text)
-    r.raise_for_status()
-    EOF
+          response = requests.get(BLOCKLIST_URL, timeout=120)
+          response.raise_for_status()
 
-    python sync.py
+          ips = []
+
+          for line in response.text.splitlines():
+              line = line.strip()
+
+              if not line:
+                  continue
+
+              if line.startswith("#"):
+                  continue
+
+              try:
+                  ips.append(
+                      ipaddress.ip_network(f"{line}/32")
+                  )
+              except Exception:
+                  pass
+
+          print(f"Loaded {len(ips)} IPs")
+
+          collapsed = list(ipaddress.collapse_addresses(ips))
+
+          print(f"Collapsed into {len(collapsed)} CIDRs")
+
+          MAX_RULES = 200
+
+          rules = []
+
+          for net in collapsed[:MAX_RULES]:
+              rules.append({
+                  "comment": "CrowdSec Auto Block",
+                  "policy": "deny",
+                  "protocol": "any",
+                  "srcPort": "Any",
+                  "srcCidr": str(net),
+                  "destPort": "Any",
+                  "destCidr": "Any",
+                  "syslogEnabled": False
+              })
+
+          rules.append({
+              "comment": "Default Allow",
+              "policy": "allow",
+              "protocol": "any",
+              "srcPort": "Any",
+              "srcCidr": "Any",
+              "destPort": "Any",
+              "destCidr": "Any",
+              "syslogEnabled": False
+          })
+
+          url = f"https://api.meraki.com/api/v1/networks/{NETWORK_ID}/appliance/firewall/l3FirewallRules"
+
+          print(f"Uploading {len(rules)} rules to Meraki...")
+
+          r = requests.put(
+              url,
+              headers=headers,
+              json={"rules": rules},
+              timeout=120
+          )
+
+          print("Status:", r.status_code)
+          print(r.text)
+
+          r.raise_for_status()
+
+          print("Done.")
+          EOF
+
+          python sync.py
