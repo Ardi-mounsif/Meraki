@@ -1,18 +1,237 @@
-name: Cleanup and Rebuild IP Blacklist
+name: IP Blacklist
 
-on: 
+on:
   workflow_dispatch:
+  schedule:
+    - cron: '0 */6 * * *'
+
+permissions:
+  contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  BLOCKLIST_URL: https://raw.githubusercontent.com/LittleJake/ip-blacklist/refs/heads/main/ustc_blacklist_ip.txt
+  MERAKI_BASE_URL: https://api.meraki.com/api/v1
+  CHUNK_SIZE: "200"
+  OBJECT_PREFIX: CrowdSec_Blocklist
+  RULE_PREFIX: AUTO_BLOCKLIST
 
 jobs:
-  cleanup:
+  sync:
     runs-on: ubuntu-latest
+
     steps:
-    - name: Delete All Groups
-      env:
-        MERAKI_API_KEY: ${{ secrets.MERAKI_API_KEY }}
-        MERAKI_ORG_ID: ${{ secrets.MERAKI_ORG_ID }}
-      run: |
-        # جيب المجموعات وتأكد أن النتيجة مصفوفة صحيحة قبل المعالجة
-        GROUPS=$(curl -s -H "X-Cisco-Meraki-API-Key: $MERAKI_API_KEY" "https://api.meraki.com/api/v1/organizations/$MERAKI_ORG_ID/policyObjects/groups")
-        
-        # تحقق واش المتغير ماشي
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch blocklist
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          curl -fsSL "$BLOCKLIST_URL" | awk '
+            { gsub(/\r/,"") }
+            /^[0-9]/ {
+              if ($0 ~ /:/) next
+              gsub(/[[:space:]]+/,"")
+              if ($0 ~ /\//) print $0
+              else print $0 "/32"
+            }
+          ' | sort -u > all_blacklist_append.txt
+
+          if [ ! -s all_blacklist_append.txt ]; then
+            echo "1.1.1.1/32" > all_blacklist_append.txt
+          fi
+
+          gzip -c all_blacklist_append.txt > all_blacklist_append.txt.gz
+          echo "Fetched $(wc -l < all_blacklist_append.txt) IPv4 entries"
+
+      - name: Sync Meraki policy objects and L3 rules
+        shell: bash
+        env:
+          MERAKI_API_KEY: ${{ secrets.MERAKI_API_KEY }}
+          MERAKI_ORG_ID: ${{ secrets.MERAKI_ORG_ID }}
+          MERAKI_NETWORK_ID: ${{ secrets.MERAKI_NETWORK_ID }}
+        run: |
+          set -euo pipefail
+
+          api_get() {
+            curl -fsS \
+              -H "X-Cisco-Meraki-API-Key: $MERAKI_API_KEY" \
+              -H "Accept: application/json" \
+              "$MERAKI_BASE_URL$1"
+          }
+
+          api_post() {
+            curl -fsS -X POST \
+              -H "X-Cisco-Meraki-API-Key: $MERAKI_API_KEY" \
+              -H "Content-Type: application/json" \
+              -H "Accept: application/json" \
+              -d "$2" \
+              "$MERAKI_BASE_URL$1"
+          }
+
+          api_put() {
+            curl -fsS -X PUT \
+              -H "X-Cisco-Meraki-API-Key: $MERAKI_API_KEY" \
+              -H "Content-Type: application/json" \
+              -H "Accept: application/json" \
+              -d "$2" \
+              "$MERAKI_BASE_URL$1"
+          }
+
+          api_delete() {
+            curl -fsS -X DELETE \
+              -H "X-Cisco-Meraki-API-Key: $MERAKI_API_KEY" \
+              -H "Accept: application/json" \
+              "$MERAKI_BASE_URL$1"
+          }
+
+          mapfile -t IPS < all_blacklist_append.txt
+          if [ "${#IPS[@]}" -eq 0 ]; then
+            echo "No IPs found."
+            exit 0
+          fi
+
+          CHUNK_SIZE="${CHUNK_SIZE:-200}"
+
+          EXISTING_OBJECTS="$(api_get "/organizations/$MERAKI_ORG_ID/policyObjects?perPage=1000" || echo '[]')"
+          EXISTING_GROUPS="$(api_get "/organizations/$MERAKI_ORG_ID/policyObjects/groups?perPage=1000" || echo '[]')"
+          CURRENT_L3="$(api_get "/networks/$MERAKI_NETWORK_ID/appliance/firewall/l3FirewallRules")"
+
+          declare -A OBJECT_ID_BY_NAME=()
+
+          while IFS=$'\t' read -r object_name object_id; do
+            [ -n "${object_name:-}" ] && [ -n "${object_id:-}" ] && OBJECT_ID_BY_NAME["$object_name"]="$object_id"
+          done < <(jq -r '.[] | [.name, .id] | @tsv' <<<"$EXISTING_OBJECTS")
+
+          OBJECT_IDS=()
+
+          echo "Creating/reusing policy objects..."
+          for ip in "${IPS[@]}"; do
+            object_name="${OBJECT_PREFIX}_${ip//[\/.:]/_}"
+
+            if [ -n "${OBJECT_ID_BY_NAME[$object_name]:-}" ]; then
+              OBJECT_IDS+=("${OBJECT_ID_BY_NAME[$object_name]}")
+              continue
+            fi
+
+            payload="$(jq -n \
+              --arg name "$object_name" \
+              --arg cidr "$ip" \
+              '{
+                name: $name,
+                category: "network",
+                type: "cidr",
+                cidr: $cidr
+              }'
+            )"
+
+            resp="$(api_post "/organizations/$MERAKI_ORG_ID/policyObjects" "$payload" || true)"
+            created_id="$(jq -r '.id // empty' <<<"$resp")"
+
+            if [ -z "$created_id" ]; then
+              created_id="$(jq -r --arg name "$object_name" '.[] | select(.name == $name) | .id' <<<"$EXISTING_OBJECTS" | head -n1)"
+            fi
+
+            if [ -z "$created_id" ]; then
+              echo "Failed to create or resolve policy object for $ip"
+              echo "$resp"
+              exit 1
+            fi
+
+            OBJECT_ID_BY_NAME["$object_name"]="$created_id"
+            OBJECT_IDS+=("$created_id")
+          done
+
+          echo "Building policy object groups..."
+          NEW_RULES_JSON='[]'
+
+          total="${#IPS[@]}"
+          for ((i=0; i<total; i+=CHUNK_SIZE)); do
+            chunk_index=$((i / CHUNK_SIZE + 1))
+
+            ips_chunk=( "${IPS[@]:i:CHUNK_SIZE}" )
+            ids_chunk=( "${OBJECT_IDS[@]:i:CHUNK_SIZE}" )
+
+            group_name="${OBJECT_PREFIX}_Part_$(printf '%03d' "$chunk_index")"
+
+            existing_group_id="$(jq -r --arg name "$group_name" '.[] | select(.name == $name) | .id' <<<"$EXISTING_GROUPS" | head -n1)"
+
+            if [ -n "$existing_group_id" ]; then
+              echo "Deleting old group $group_name"
+              api_delete "/organizations/$MERAKI_ORG_ID/policyObjects/groups/$existing_group_id" >/dev/null || true
+            fi
+
+            ids_json="$(printf '%s\n' "${ids_chunk[@]}" | jq -R . | jq -sc '.')"
+
+            group_payload="$(jq -n \
+              --arg name "$group_name" \
+              --argjson ids "$ids_json" \
+              '{
+                name: $name,
+                category: "NetworkObjectGroup",
+                objectIds: $ids
+              }'
+            )"
+
+            echo "Creating group $group_name with ${#ids_chunk[@]} objects"
+            api_post "/organizations/$MERAKI_ORG_ID/policyObjects/groups" "$group_payload" >/dev/null
+
+            dest_csv="$(IFS=,; echo "${ips_chunk[*]}")"
+            rule_comment="${RULE_PREFIX} $(printf '%03d' "$chunk_index")"
+
+            NEW_RULES_JSON="$(jq \
+              --arg comment "$rule_comment" \
+              --arg dest "$dest_csv" \
+              '. + [{
+                comment: $comment,
+                policy: "deny",
+                protocol: "any",
+                srcPort: "any",
+                srcCidr: "any",
+                destPort: "any",
+                destCidr: $dest,
+                syslogEnabled: false
+              }]' <<<"$NEW_RULES_JSON")"
+          done
+
+          KEPT_RULES_JSON="$(jq --arg prefix "$RULE_PREFIX" '.rules | map(select((.comment // "") | startswith($prefix) | not))' <<<"$CURRENT_L3")"
+
+          if jq -e '.syslogDefaultRule != null' <<<"$CURRENT_L3" >/dev/null 2>&1; then
+            SYSLOG_DEFAULT="$(jq '.syslogDefaultRule' <<<"$CURRENT_L3")"
+            FINAL_PAYLOAD="$(jq -n \
+              --argjson add "$NEW_RULES_JSON" \
+              --argjson kept "$KEPT_RULES_JSON" \
+              --argjson syslogDefaultRule "$SYSLOG_DEFAULT" \
+              '{rules: ($add + $kept), syslogDefaultRule: $syslogDefaultRule}'
+            )"
+          else
+            FINAL_PAYLOAD="$(jq -n \
+              --argjson add "$NEW_RULES_JSON" \
+              --argjson kept "$KEPT_RULES_JSON" \
+              '{rules: ($add + $kept)}'
+            )"
+          fi
+
+          echo "Updating L3 firewall rules..."
+          api_put "/networks/$MERAKI_NETWORK_ID/appliance/firewall/l3FirewallRules" "$FINAL_PAYLOAD" >/dev/null
+
+          echo "Done."
+
+      - name: Commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "github-actions[bot]"
+          git add all_blacklist_append.txt.gz
+          git commit -m "Update IP [skip ci]." || echo "No changes to commit"
+
+      - name: Push changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git push
