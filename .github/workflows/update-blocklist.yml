@@ -1,56 +1,74 @@
-name: Update Meraki Blocklist
+name: IP Blacklist
 
-on:
+on: 
+  workflow_dispatch:
   schedule:
-    - cron: '0 0 * * *' # كايشتغل تلقائياً كل نهار مع المنتصف ديال الليل
-  workflow_dispatch: # كايسمح لك تشغل الكود بيدك وقتما بغيتي
-
+    - cron: '0 */6 * * *'
+   
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true # تفعيل الدعم الكامل لـ Node.js 24 وحذف التحذير
 
 jobs:
-  update-meraki:
+  fetch:
     runs-on: ubuntu-latest
-
     steps:
-    - name: Checkout Repository
+    - name: Checkout
       uses: actions/checkout@v4
 
-    - name: Fetch Bad IPs
-      run: |
-        # نحاول نجيب القائمة من الرابط الرئيسي، وإلا نستعمل رابط الاسترجاع المباشر
-        curl -s https://lists.crowdsec.net/limiter/firewalls > raw-ips.txt || curl -s https://raw.githubusercontent.com/crowdsecurity/crowdsec-blocklists/main/lists/firewalls.txt > raw-ips.txt
-        
-        # تنظيف الملف واستخراج عناوين IP فقط مع تفادي توقف السكربت
-        grep -v '^#' raw-ips.txt | grep -E '^[0-9]' > bad-ips.txt || true
-        
-        # التأكد من أن الملف ليس فارغاً، وإذا كان فارغاً نضع IP وهمي للحماية
-        if [ ! -s bad-ips.txt ]; then
-          echo "1.1.1.1" > bad-ips.txt
-        fi
-        
-        echo "Fetched $(wc -l < bad-ips.txt) IPs"
+    - name: Fetch
+      run: | 
+        chmod +x ./cidr-merger
+        gzip -d all_blacklist_append.txt.gz && mv all_blacklist_append.txt all_blacklist_append.tmp
+        echo "">abuseipdb_blacklist_ip_score_100.tmp
+        echo "">abuseipdb_blacklist_ip_score_75.tmp
+        curl -G https://api.abuseipdb.com/api/v2/blacklist -d ipVersion=6 -d confidenceMinimum=100 -d limit=9999999 -d plaintext -H "Key: ${{ secrets.ABUSEIPDB_TOKEN }}" -H "Accept: text/plain" >> abuseipdb_blacklist_ip_score_100.tmp || true
+        curl -G https://api.abuseipdb.com/api/v2/blacklist -d ipVersion=6 -d confidenceMinimum=75 -d limit=9999999 -d plaintext -H "Key: ${{ secrets.ABUSEIPDB_TOKEN }}" -H "Accept: text/plain" >> abuseipdb_blacklist_ip_score_75.tmp || true
+        echo "">>abuseipdb_blacklist_ip_score_100.tmp
+        echo "">>abuseipdb_blacklist_ip_score_75.tmp
+        curl -G https://api.abuseipdb.com/api/v2/blacklist -d ipVersion=4 -d confidenceMinimum=100 -d limit=9999999 -d plaintext -H "Key: ${{ secrets.ABUSEIPDB_TOKEN }}" -H "Accept: text/plain" >> abuseipdb_blacklist_ip_score_100.tmp || true
+        curl -G https://api.abuseipdb.com/api/v2/blacklist -d ipVersion=4 -d confidenceMinimum=75 -d limit=9999999 -d plaintext -H "Key: ${{ secrets.ABUSEIPDB_TOKEN }}" -H "Accept: text/plain" >> abuseipdb_blacklist_ip_score_75.tmp || true
+        ./cidr-merger -o abuseipdb_blacklist_ip_score_75.txt abuseipdb_blacklist_ip_score_75.tmp
+        ./cidr-merger -o abuseipdb_blacklist_ip_score_100.txt abuseipdb_blacklist_ip_score_100.tmp
+        curl http://antivirus.neu.edu.cn/ssh/lists/neu.txt -H "Accept: text/plain"|grep -v "127.0.0.1"|grep -v "#"| awk -F" " '{print $2}'|./cidr-merger -o neucert_blacklist_ip.txt || true
+        curl https://blackip.ustc.edu.cn/list.php?txt -H "Accept: text/plain"|grep -v "127.0.0.1"|./cidr-merger -o ustc_blacklist_ip.txt || true
+        ./cidr-merger -o all_blacklist_append.txt *.txt all_blacklist_append.tmp
+        gzip all_blacklist_append.txt
+        rm -f *.tmp
 
     - name: Push to Cisco Meraki API
       env:
         MERAKI_API_KEY: ${{ secrets.MERAKI_API_KEY }}
         MERAKI_ORG_ID: ${{ secrets.MERAKI_ORG_ID }}
       run: |
-        # Take the top 1000 IPs to prevent Meraki API payload size overflow
-        head -n 1000 bad-ips.txt > meraki-ips.txt
+        # فك الضغط مؤقتاً لقراءة الـ IPs المجمعة من الروابط ديالك
+        gunzip -c all_blacklist_append.txt.gz > clean-ips.txt
+        
+        # استخراج عناوين IPv4 فقط وتفادي IPv6 لضمان توافق الكامل مع Meraki Firewall
+        grep -E '^[0-9]' clean-ips.txt | grep -v ':' > ipv4-only.txt || true
+        
+        # أخذ أول 1000 IP لتفادي تخطي حجم الـ Payload المسموح به في الـ API
+        head -n 1000 ipv4-only.txt > meraki-ips.txt
+        
+        if [ ! -s meraki-ips.txt ]; then
+          echo "1.1.1.1/32" > meraki-ips.txt
+        fi
 
-        # Build the JSON payload automatically using NetworkObjectGroup category
+        # بناء كود الـ JSON بنوع الخانة الصحيح NetworkObjectGroup
         JSON_PAYLOAD=$(jq -n --arg name "CrowdSec_Blocklist" --arg cat "NetworkObjectGroup" \
           '{"name": $name, "category": $cat, "objects": []}')
 
         while IFS= read -r ip || [ -n "$ip" ]; do
-          JSON_PAYLOAD=$(echo "$JSON_PAYLOAD" | jq --arg val "$ip/32" '.objects += [{"type": "cidr", "value": $val}]')
+          if [[ ! "$ip" == *"/"* ]]; then
+            val="$ip/32"
+          else
+            val="$ip"
+          fi
+          JSON_PAYLOAD=$(echo "$JSON_PAYLOAD" | jq --arg val "$val" '.objects += [{"type": "cidr", "value": $val}]')
         done < meraki-ips.txt
 
-        # Check if the group already exists using the official policyObjects endpoint
+        # التحقق واختيار الـ Method الصحيح (PUT للتعديل أو POST للإنشاء)
         EXISTING_GROUPS=$(curl -s -H "X-Cisco-Meraki-API-Key: $MERAKI_API_KEY" "https://api.meraki.com/api/v1/organizations/$MERAKI_ORG_ID/policyObjects/groups")
         
-        # تفادي خطأ التفكيك إذا لم يكن الرد كود JSON صحيح
         GROUP_ID="null"
         if echo "$EXISTING_GROUPS" | jq -e . >/dev/null 2>&1; then
           GROUP_ID=$(echo "$EXISTING_GROUPS" | jq -r '.[] | select(.name=="CrowdSec_Blocklist") | .id' 2>/dev/null || echo "null")
@@ -71,11 +89,18 @@ jobs:
             -H "Accept: application/json" \
             -d "$JSON_PAYLOAD"
         fi
+        
+        rm -f clean-ips.txt ipv4-only.txt meraki-ips.txt
 
-    - name: Commit and Push Changes
+    - name: Commit
       run: |
-        git config --global user.name "github-actions[bot]"
         git config --global user.email "github-actions[bot]@users.noreply.github.com"
-        git add bad-ips.txt
-        git commit -m "Update CrowdSec bad IPs list [skip ci]" || echo "No changes to commit"
-        git push origin main
+        git config --global user.name "github-actions[bot]"
+        git add .
+        git commit -m "Update IP [skip ci]." -a || echo "No changes to commit"
+
+    - name: Push changes
+      uses: ad-m/github-push-action@master
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        branch: main
