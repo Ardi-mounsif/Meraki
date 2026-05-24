@@ -1,46 +1,33 @@
-name: IP Blacklist
+name: Cleanup and Rebuild IP Blacklist
 
 on: 
   workflow_dispatch:
-  schedule:
-    - cron: '0 */6 * * *'
-   
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  fetch:
+  cleanup:
     runs-on: ubuntu-latest
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-
-    - name: Fetch and Process
-      run: | 
-        # جلب الـ IPs
-        curl -s https://raw.githubusercontent.com/LittleJake/ip-blacklist/refs/heads/main/ustc_blacklist_ip.txt > raw.txt
-        grep -E '^[0-9]' raw.txt | grep -v ':' > ips.txt
-        
-        # تحويل لـ Subnets باش Meraki تقبلهم دفعة واحدة
-        # هاد السطر كايحول IPs لـ CIDR /32
-        sed 's/$/\/32/' ips.txt > cidrs.txt
-        
-    - name: Push to Meraki
+    - name: Delete All Groups
       env:
         MERAKI_API_KEY: ${{ secrets.MERAKI_API_KEY }}
         MERAKI_ORG_ID: ${{ secrets.MERAKI_ORG_ID }}
       run: |
-        # عوض نكريو 7000 object، غنكريو مجموعة وحدة ونحطو فيها الـ CIDRs كـ NetworkObjects مباشرة
-        # هاد الطريقة هي اللي كتعمر خانة Contains
+        # جيب كاع الـ IDs ديال المجموعات
+        GROUPS=$(curl -s -H "X-Cisco-Meraki-API-Key: $MERAKI_API_KEY" "https://api.meraki.com/api/v1/organizations/$MERAKI_ORG_ID/policyObjects/groups")
         
-        # تحضير الـ Payload
-        JSON_PAYLOAD=$(jq -n --arg name "CrowdSec_Blocklist" \
-          --arg cat "network" \
-          '{"name": $name, "category": $cat, "type": "cidr", "cidr": "1.1.1.1/32"}')
-        
-        # ملاحظة: Meraki كتفرض Limit فعدد الـ Objects. 
-        # جرب هاد الطريقة لي كتعمر الـ Objects ديريكت
-        curl -X POST "https://api.meraki.com/api/v1/organizations/$MERAKI_ORG_ID/policyObjects" \
+        # مسح كل مجموعة وحدة بوحدة
+        echo "$GROUPS" | jq -r '.[].id' | while read id; do
+          echo "Deleting group $id..."
+          curl -s -X DELETE -H "X-Cisco-Meraki-API-Key: $MERAKI_API_KEY" "https://api.meraki.com/api/v1/organizations/$MERAKI_ORG_ID/policyObjects/groups/$id"
+        done
+
+    - name: Create Main Group
+      env:
+        MERAKI_API_KEY: ${{ secrets.MERAKI_API_KEY }}
+        MERAKI_ORG_ID: ${{ secrets.MERAKI_ORG_ID }}
+      run: |
+        # دابا كريي مجموعة وحدة رئيسية خاوية
+        curl -X POST "https://api.meraki.com/api/v1/organizations/$MERAKI_ORG_ID/policyObjects/groups" \
              -H "X-Cisco-Meraki-API-Key: $MERAKI_API_KEY" \
              -H "Content-Type: application/json" \
-             -d "$JSON_PAYLOAD"
+             -d '{"name": "CrowdSec_Main_Blocklist", "category": "NetworkObjectGroup", "objectIds": []}'
