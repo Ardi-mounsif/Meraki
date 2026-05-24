@@ -6,7 +6,7 @@ on:
     - cron: '0 */6 * * *'
    
 env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true # تفعيل الدعم الكامل لـ Node.js 24 وحذف التحذير
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   fetch:
@@ -17,18 +17,13 @@ jobs:
 
     - name: Fetch
       run: | 
-        # جلب البيانات من المصدر الوحيد المحدد
         curl -s https://raw.githubusercontent.com/LittleJake/ip-blacklist/refs/heads/main/ustc_blacklist_ip.txt > raw_fetched_ips.txt || true
-        
-        # تنظيف الملف وتصفية عناوين IPv4 وتفادي التكرار
         grep -E '^[0-9]' raw_fetched_ips.txt | grep -v ':' | sort -u > all_blacklist_append.txt || true
         
-        # إذا كان الملف فارغاً نضع IP وهمي للحماية
         if [ ! -s all_blacklist_append.txt ]; then
           echo "1.1.1.1/32" > all_blacklist_append.txt
         fi
 
-        # ضغط الملف لحفظه في المستودع
         gzip -c all_blacklist_append.txt > all_blacklist_append.txt.gz
         rm -f raw_fetched_ips.txt
 
@@ -37,10 +32,8 @@ jobs:
         MERAKI_API_KEY: ${{ secrets.MERAKI_API_KEY }}
         MERAKI_ORG_ID: ${{ secrets.MERAKI_ORG_ID }}
       run: |
-        # تقطيع الملف الكامل إلى أجزاء يحتوي كل منها على 1000 لضمان قبولهم في Meraki
         split -l 1000 all_blacklist_append.txt part_ips_ --numeric-suffixes=1
 
-        # جلب المجموعات الحالية لمعرفة ما إذا كانت متواجدة مسبقاً
         EXISTING_GROUPS=$(curl -s -H "X-Cisco-Meraki-API-Key: $MERAKI_API_KEY" "https://api.meraki.com/api/v1/organizations/$MERAKI_ORG_ID/policyObjects/groups")
 
         for file in part_ips_*; do
@@ -49,7 +42,7 @@ jobs:
           
           echo "Processing $group_name with $(wc -l < $file) IPs..."
 
-          # بناء كود الـ JSON للجزء الحالي
+          # بناء الـ JSON وتحديد الاسم والـ CIDR لكل عنصر لضمان ظهوره داخل المجموعة
           JSON_PAYLOAD=$(jq -n --arg name "$group_name" --arg cat "NetworkObjectGroup" '{"name": $name, "category": $cat, "objects": []}')
 
           while IFS= read -r ip || [ -n "$ip" ]; do
@@ -58,10 +51,10 @@ jobs:
             else
               val="$ip"
             fi
-            JSON_PAYLOAD=$(echo "$JSON_PAYLOAD" | jq --arg val "$val" '.objects += [{"type": "cidr", "value": $val}]')
+            # تصحيح البنية وإضافة الـ name والـ value والـ type لكل IP لتقبله المنصة
+            JSON_PAYLOAD=$(echo "$JSON_PAYLOAD" | jq --arg val "$val" '.objects += [{"name": $val, "type": "cidr", "value": $val}]')
           done < "$file"
 
-          # البحث عن ID المجموعة الحالية واختيار طريقة التحديث المناسبة
           GROUP_ID="null"
           if echo "$EXISTING_GROUPS" | jq -e . >/dev/null 2>&1; then
             GROUP_ID=$(echo "$EXISTING_GROUPS" | jq -r --arg name "$group_name" '.[] | select(.name==$name) | .id' 2>/dev/null || echo "null")
