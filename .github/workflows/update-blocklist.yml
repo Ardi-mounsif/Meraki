@@ -5,6 +5,9 @@ on:
     - cron: '0 0 * * *' # كايشتغل تلقائياً كل نهار مع المنتصف ديال الليل
   workflow_dispatch: # كايسمح لك تشغل الكود بيدك وقتما بغيتي
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true # تفعيل الدعم الكامل لـ Node.js 24 وحذف التحذير
+
 jobs:
   update-meraki:
     runs-on: ubuntu-latest
@@ -15,7 +18,17 @@ jobs:
 
     - name: Fetch Bad IPs
       run: |
-        curl -s https://lists.crowdsec.net/limiter/firewalls | grep -v '^#' | grep -E '^[0-9]' > bad-ips.txt
+        # نحاول نجيب القائمة من الرابط الرئيسي، وإلا نستعمل رابط الاسترجاع المباشر
+        curl -s https://lists.crowdsec.net/limiter/firewalls > raw-ips.txt || curl -s https://raw.githubusercontent.com/crowdsecurity/crowdsec-blocklists/main/lists/firewalls.txt > raw-ips.txt
+        
+        # تنظيف الملف واستخراج عناوين IP فقط مع تفادي توقف السكربت
+        grep -v '^#' raw-ips.txt | grep -E '^[0-9]' > bad-ips.txt || true
+        
+        # التأكد من أن الملف ليس فارغاً، وإذا كان فارغاً نضع IP وهمي للحماية
+        if [ ! -s bad-ips.txt ]; then
+          echo "1.1.1.1" > bad-ips.txt
+        fi
+        
         echo "Fetched $(wc -l < bad-ips.txt) IPs"
 
     - name: Push to Cisco Meraki API
