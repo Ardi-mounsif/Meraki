@@ -1,61 +1,52 @@
-name: Update blocklist
+name: Update Meraki Blocklist
 
-on: 
-  workflow_dispatch:
+on:
   schedule:
-    - cron: '0 */3 * * *'
-   
+    - cron: '0 0 * * *' # كايشتغل تلقائياً كل نهار مع المنتصف ديال الليل
+  workflow_dispatch: # كايسمح لك تشغل الكود بيدك وقتما بغيتي
+
 jobs:
-  fetch:
+  update-meraki:
     runs-on: ubuntu-latest
+
     steps:
-    - name: Checkout
-      uses: actions/checkout@main
-    - uses: fregante/setup-git-user@v2
-    - name: Fetch
-      run: | 
-        curl -O https://raw.githubusercontent.com/LittleJake/ip-blacklist/main/ustc_blacklist_ip.txt
-        curl -O https://raw.githubusercontent.com/LittleJake/ip-blacklist/main/abuseipdb_blacklist_ip_score_75.txt
-        curl -O https://raw.githubusercontent.com/stamparm/ipsum/master/levels/3.txt
-        curl -O https://raw.githubusercontent.com/romainmarcoux/malicious-ip/main/full-aa.txt
-        curl -O https://raw.githubusercontent.com/montysecurity/C2-Tracker/refs/heads/main/data/all.txt
-        for F in `ls *.txt`;do echo "">> $F; done
-        
-        cat *.txt|grep -v "#"|grep -v ":"|grep -v '^$'|sort|uniq > bad-ips.txt
-        cat *.txt|grep -v "#"|grep -v '^$'|sort|uniq > bad-ips-v6.txt
-        
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Set up Git User
+      uses: fregate/setup-git-user@v2
+
+    - name: Fetch Bad IPs
+      run: |
+        curl -s https://lists.crowdsec.net/limiter/firewalls | grep -v '^#' | grep -E '^[0-9]' > bad-ips.txt
+        echo "Fetched $(wc -l < bad-ips.txt) IPs"
+
     - name: Push to Cisco Meraki API
       env:
         MERAKI_API_KEY: ${{ secrets.MERAKI_API_KEY }}
         MERAKI_ORG_ID: ${{ secrets.MERAKI_ORG_ID }}
-        MERAKI_GROUP_ID: ${{ secrets.MERAKI_GROUP_ID }}
       run: |
         # Take the top 1000 IPs to prevent Meraki API payload size overflow
         head -n 1000 bad-ips.txt > meraki-ips.txt
-        
+
         # Build the JSON payload automatically using jq tool
         JSON_PAYLOAD=$(jq -n --arg name "CrowdSec_Blocklist" --arg cat "network" \
           '{"name": $name, "category": $cat, "objects": []}')
-          
+
         while IFS= read -r ip || [ -n "$ip" ]; do
           JSON_PAYLOAD=$(echo "$JSON_PAYLOAD" | jq --arg val "$ip/32" '.objects += [{"type": "cidr", "value": $val}]')
         done < meraki-ips.txt
-        
-        # Send the PUT/POST request directly to update the existing Meraki network policy object group
-        curl -X PUT "https://api.meraki.com/api/v1/organizations/$MERAKI_ORG_ID/policyObjects/groups/$MERAKI_GROUP_ID" \
+
+        # Send the POST request to create the Meraki network policy object group
+        curl -X POST "https://api.meraki.com/api/v1/organizations/$MERAKI_ORG_ID/policyObjects/groups" \
           -H "X-Cisco-Meraki-API-Key: $MERAKI_API_KEY" \
           -H "Content-Type: application/json" \
+          -H "Accept: application/json" \
+          -H "X-Cisco-Meraki-API-User-Agent: MerakiAuth" \
           -d "$JSON_PAYLOAD"
 
-    - name: Commit
+    - name: Commit and Push Changes
       run: |
-        git add bad-ips.txt bad-ips-v6.txt
-        IPV4_COUNT=$(wc -l bad-ips.txt | cut -d ' ' -f 1,1)
-        IPV6_COUNT=$(wc -l bad-ips-v6.txt | cut -d ' ' -f 1,1)
-        git commit -m "Update IPs (IPv4: $IPV4_COUNT IPs, IPv4+v6: $IPV6_COUNT IPs)" -a
-        
-    - name: Push changes
-      uses: ad-m/github-push-action@master
-      with:
-        github_token: ${{ secrets.GITHUB_TOKEN }}
-        branch: main
+        git add bad-ips.txt
+        git commit -m "Update CrowdSec bad IPs list [skip ci]" || echo "No changes to commit"
+        git push origin main
