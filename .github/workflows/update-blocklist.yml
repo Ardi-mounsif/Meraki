@@ -17,87 +17,81 @@ jobs:
 
     - name: Fetch
       run: | 
-        chmod +x ./cidr-merger
-        gzip -d all_blacklist_append.txt.gz && mv all_blacklist_append.txt all_blacklist_append.tmp
-        echo "">abuseipdb_blacklist_ip_score_100.tmp
-        echo "">abuseipdb_blacklist_ip_score_75.tmp
-        curl -G https://api.abuseipdb.com/api/v2/blacklist -d ipVersion=6 -d confidenceMinimum=100 -d limit=9999999 -d plaintext -H "Key: ${{ secrets.ABUSEIPDB_TOKEN }}" -H "Accept: text/plain" >> abuseipdb_blacklist_ip_score_100.tmp || true
-        curl -G https://api.abuseipdb.com/api/v2/blacklist -d ipVersion=6 -d confidenceMinimum=75 -d limit=9999999 -d plaintext -H "Key: ${{ secrets.ABUSEIPDB_TOKEN }}" -H "Accept: text/plain" >> abuseipdb_blacklist_ip_score_75.tmp || true
-        echo "">>abuseipdb_blacklist_ip_score_100.tmp
-        echo "">>abuseipdb_blacklist_ip_score_75.tmp
-        curl -G https://api.abuseipdb.com/api/v2/blacklist -d ipVersion=4 -d confidenceMinimum=100 -d limit=9999999 -d plaintext -H "Key: ${{ secrets.ABUSEIPDB_TOKEN }}" -H "Accept: text/plain" >> abuseipdb_blacklist_ip_score_100.tmp || true
-        curl -G https://api.abuseipdb.com/api/v2/blacklist -d ipVersion=4 -d confidenceMinimum=75 -d limit=9999999 -d plaintext -H "Key: ${{ secrets.ABUSEIPDB_TOKEN }}" -H "Accept: text/plain" >> abuseipdb_blacklist_ip_score_75.tmp || true
-        ./cidr-merger -o abuseipdb_blacklist_ip_score_75.txt abuseipdb_blacklist_ip_score_75.tmp
-        ./cidr-merger -o abuseipdb_blacklist_ip_score_100.txt abuseipdb_blacklist_ip_score_100.tmp
-        curl http://antivirus.neu.edu.cn/ssh/lists/neu.txt -H "Accept: text/plain"|grep -v "127.0.0.1"|grep -v "#"| awk -F" " '{print $2}'|./cidr-merger -o neucert_blacklist_ip.txt || true
-        curl https://blackip.ustc.edu.cn/list.php?txt -H "Accept: text/plain"|grep -v "127.0.0.1"|./cidr-merger -o ustc_blacklist_ip.txt || true
-        ./cidr-merger -o all_blacklist_append.txt *.txt all_blacklist_append.tmp
-        gzip all_blacklist_append.txt
-        rm -f *.tmp
+        # جلب البيانات من المصدر الوحيد المحدد
+        curl -s https://raw.githubusercontent.com/LittleJake/ip-blacklist/refs/heads/main/ustc_blacklist_ip.txt > raw_fetched_ips.txt || true
+        
+        # تنظيف الملف وتصفية عناوين IPv4 وتفادي التكرار
+        grep -E '^[0-9]' raw_fetched_ips.txt | grep -v ':' | sort -u > all_blacklist_append.txt || true
+        
+        # إذا كان الملف فارغاً نضع IP وهمي للحماية
+        if [ ! -s all_blacklist_append.txt ]; then
+          echo "1.1.1.1/32" > all_blacklist_append.txt
+        fi
+
+        # ضغط الملف لحفظه في المستودع
+        gzip -c all_blacklist_append.txt > all_blacklist_append.txt.gz
+        rm -f raw_fetched_ips.txt
 
     - name: Push to Cisco Meraki API
       env:
         MERAKI_API_KEY: ${{ secrets.MERAKI_API_KEY }}
         MERAKI_ORG_ID: ${{ secrets.MERAKI_ORG_ID }}
       run: |
-        # فك الضغط مؤقتاً لقراءة الـ IPs المجمعة من الروابط ديالك
-        gunzip -c all_blacklist_append.txt.gz > clean-ips.txt
-        
-        # استخراج عناوين IPv4 فقط وتفادي IPv6 لضمان توافق الكامل مع Meraki Firewall
-        grep -E '^[0-9]' clean-ips.txt | grep -v ':' > ipv4-only.txt || true
-        
-        # أخذ أول 1000 IP لتفادي تخطي حجم الـ Payload المسموح به في الـ API
-        head -n 1000 ipv4-only.txt > meraki-ips.txt
-        
-        if [ ! -s meraki-ips.txt ]; then
-          echo "1.1.1.1/32" > meraki-ips.txt
-        fi
+        # تقطيع الملف الكامل إلى أجزاء يحتوي كل منها على 1000 لضمان قبولهم في Meraki
+        split -l 1000 all_blacklist_append.txt part_ips_ --numeric-suffixes=1
 
-        # بناء كود الـ JSON بنوع الخانة الصحيح NetworkObjectGroup
-        JSON_PAYLOAD=$(jq -n --arg name "CrowdSec_Blocklist" --arg cat "NetworkObjectGroup" \
-          '{"name": $name, "category": $cat, "objects": []}')
-
-        while IFS= read -r ip || [ -n "$ip" ]; do
-          if [[ ! "$ip" == *"/"* ]]; then
-            val="$ip/32"
-          else
-            val="$ip"
-          fi
-          JSON_PAYLOAD=$(echo "$JSON_PAYLOAD" | jq --arg val "$val" '.objects += [{"type": "cidr", "value": $val}]')
-        done < meraki-ips.txt
-
-        # التحقق واختيار الـ Method الصحيح (PUT للتعديل أو POST للإنشاء)
+        # جلب المجموعات الحالية لمعرفة ما إذا كانت متواجدة مسبقاً
         EXISTING_GROUPS=$(curl -s -H "X-Cisco-Meraki-API-Key: $MERAKI_API_KEY" "https://api.meraki.com/api/v1/organizations/$MERAKI_ORG_ID/policyObjects/groups")
-        
-        GROUP_ID="null"
-        if echo "$EXISTING_GROUPS" | jq -e . >/dev/null 2>&1; then
-          GROUP_ID=$(echo "$EXISTING_GROUPS" | jq -r '.[] | select(.name=="CrowdSec_Blocklist") | .id' 2>/dev/null || echo "null")
-        fi
 
-        if [ -n "$GROUP_ID" ] && [ "$GROUP_ID" != "null" ]; then
-          echo "Group exists with ID: $GROUP_ID. Updating using PUT..."
-          curl -X PUT "https://api.meraki.com/api/v1/organizations/$MERAKI_ORG_ID/policyObjects/groups/$GROUP_ID" \
-            -H "X-Cisco-Meraki-API-Key: $MERAKI_API_KEY" \
-            -H "Content-Type: application/json" \
-            -H "Accept: application/json" \
-            -d "$JSON_PAYLOAD"
-        else
-          echo "Group does not exist. Creating using POST..."
-          curl -X POST "https://api.meraki.com/api/v1/organizations/$MERAKI_ORG_ID/policyObjects/groups" \
-            -H "X-Cisco-Meraki-API-Key: $MERAKI_API_KEY" \
-            -H "Content-Type: application/json" \
-            -H "Accept: application/json" \
-            -d "$JSON_PAYLOAD"
-        fi
-        
-        rm -f clean-ips.txt ipv4-only.txt meraki-ips.txt
+        for file in part_ips_*; do
+          suffix="${file##*_}"
+          group_name="CrowdSec_Blocklist_Part_${suffix}"
+          
+          echo "Processing $group_name with $(wc -l < $file) IPs..."
+
+          # بناء كود الـ JSON للجزء الحالي
+          JSON_PAYLOAD=$(jq -n --arg name "$group_name" --arg cat "NetworkObjectGroup" '{"name": $name, "category": $cat, "objects": []}')
+
+          while IFS= read -r ip || [ -n "$ip" ]; do
+            if [[ ! "$ip" == *"/"* ]]; then
+              val="$ip/32"
+            else
+              val="$ip"
+            fi
+            JSON_PAYLOAD=$(echo "$JSON_PAYLOAD" | jq --arg val "$val" '.objects += [{"type": "cidr", "value": $val}]')
+          done < "$file"
+
+          # البحث عن ID المجموعة الحالية واختيار طريقة التحديث المناسبة
+          GROUP_ID="null"
+          if echo "$EXISTING_GROUPS" | jq -e . >/dev/null 2>&1; then
+            GROUP_ID=$(echo "$EXISTING_GROUPS" | jq -r --arg name "$group_name" '.[] | select(.name==$name) | .id' 2>/dev/null || echo "null")
+          fi
+
+          if [ -n "$GROUP_ID" ] && [ "$GROUP_ID" != "null" ]; then
+            echo "Group $group_name exists with ID: $GROUP_ID. Updating using PUT..."
+            curl -X PUT "https://api.meraki.com/api/v1/organizations/$MERAKI_ORG_ID/policyObjects/groups/$GROUP_ID" \
+              -H "X-Cisco-Meraki-API-Key: $MERAKI_API_KEY" \
+              -H "Content-Type: application/json" \
+              -H "Accept: application/json" \
+              -d "$JSON_PAYLOAD"
+          else
+            echo "Group $group_name does not exist. Creating using POST..."
+            curl -X POST "https://api.meraki.com/api/v1/organizations/$MERAKI_ORG_ID/policyObjects/groups" \
+              -H "X-Cisco-Meraki-API-Key: $MERAKI_API_KEY" \
+              -H "Content-Type: application/json" \
+              -H "Accept: application/json" \
+              -d "$JSON_PAYLOAD"
+          fi
+        done
+
+        rm -f all_blacklist_append.txt part_ips_*
 
     - name: Commit
       run: |
         git config --global user.email "github-actions[bot]@users.noreply.github.com"
         git config --global user.name "github-actions[bot]"
-        git add .
-        git commit -m "Update IP [skip ci]." -a || echo "No changes to commit"
+        git add all_blacklist_append.txt.gz
+        git commit -m "Update IP [skip ci]." || echo "No changes to commit"
 
     - name: Push changes
       uses: ad-m/github-push-action@master
