@@ -1,77 +1,18 @@
-name: IP Blacklist
+name: Cleanup and Rebuild IP Blacklist
 
 on: 
   workflow_dispatch:
-  schedule:
-    - cron: '0 */6 * * *'
-   
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  fetch:
+  cleanup:
     runs-on: ubuntu-latest
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-
-    - name: Fetch
-      run: | 
-        curl -s https://raw.githubusercontent.com/LittleJake/ip-blacklist/refs/heads/main/ustc_blacklist_ip.txt > raw_fetched_ips.txt || true
-        grep -E '^[0-9]' raw_fetched_ips.txt | grep -v ':' | sort -u > all_blacklist_append.txt || true
-        
-        if [ ! -s all_blacklist_append.txt ]; then
-          echo "1.1.1.1/32" > all_blacklist_append.txt
-        fi
-
-    - name: Push to Cisco Meraki API
+    - name: Delete All Groups
       env:
         MERAKI_API_KEY: ${{ secrets.MERAKI_API_KEY }}
         MERAKI_ORG_ID: ${{ secrets.MERAKI_ORG_ID }}
       run: |
-        head -n 50 all_blacklist_append.txt > meraki-ips.txt
+        # جيب المجموعات وتأكد أن النتيجة مصفوفة صحيحة قبل المعالجة
+        GROUPS=$(curl -s -H "X-Cisco-Meraki-API-Key: $MERAKI_API_KEY" "https://api.meraki.com/api/v1/organizations/$MERAKI_ORG_ID/policyObjects/groups")
         
-        EXISTING_OBJECTS=$(curl -s -H "X-Cisco-Meraki-API-Key: $MERAKI_API_KEY" "https://api.meraki.com/api/v1/organizations/$MERAKI_ORG_ID/policyObjects")
-
-        OBJECT_IDS_ARRAY="[]"
-
-        while IFS= read -r ip || [ -n "$ip" ]; do
-          if [[ ! "$ip" == *"/"* ]]; then
-            val="$ip/32"
-          else
-            val="$ip"
-          fi
-          
-          OBJ_ID=$(echo "$EXISTING_OBJECTS" | jq -r --arg cidr "$val" '.[] | select(.cidr==$cidr) | .id' 2>/dev/null | head -n 1)
-          
-          if [ -z "$OBJ_ID" ]; then
-            RESPONSE=$(curl -s -X POST "https://api.meraki.com/api/v1/organizations/$MERAKI_ORG_ID/policyObjects" \
-              -H "X-Cisco-Meraki-API-Key: $MERAKI_API_KEY" \
-              -H "Content-Type: application/json" \
-              -d "{\"name\": \"Block_$ip\", \"category\": \"network\", \"type\": \"cidr\", \"cidr\": \"$val\"}")
-            
-            OBJ_ID=$(echo "$RESPONSE" | jq -r '.id' 2>/dev/null)
-            sleep 0.3
-          fi
-          
-          if [ -n "$OBJ_ID" ] && [ "$OBJ_ID" != "null" ]; then
-            OBJECT_IDS_ARRAY=$(echo "$OBJECT_IDS_ARRAY" | jq --arg id "$OBJ_ID" '. += [$id]')
-          fi
-        done < meraki-ips.txt
-
-        EXISTING_GROUPS=$(curl -s -H "X-Cisco-Meraki-API-Key: $MERAKI_API_KEY" "https://api.meraki.com/api/v1/organizations/$MERAKI_ORG_ID/policyObjects/groups")
-        GROUP_ID=$(echo "$EXISTING_GROUPS" | jq -r '.[] | select(.name=="CrowdSec_Blocklist_Main") | .id' 2>/dev/null || echo "null")
-
-        JSON_PAYLOAD=$(jq -n --arg name "CrowdSec_Blocklist_Main" --arg cat "NetworkObjectGroup" --argjson ids "$OBJECT_IDS_ARRAY" '{"name": $name, "category": $cat, "objectIds": $ids}')
-
-        if [ -n "$GROUP_ID" ] && [ "$GROUP_ID" != "null" ]; then
-          curl -X PUT "https://api.meraki.com/api/v1/organizations/$MERAKI_ORG_ID/policyObjects/groups/$GROUP_ID" \
-            -H "X-Cisco-Meraki-API-Key: $MERAKI_API_KEY" \
-            -H "Content-Type: application/json" \
-            -d "$JSON_PAYLOAD"
-        else
-          curl -X POST "https://api.meraki.com/api/v1/organizations/$MERAKI_ORG_ID/policyObjects/groups" \
-            -H "X-Cisco-Meraki-API-Key: $MERAKI_API_KEY" \
-            -H "Content-Type: application/json" \
-            -d "$JSON_PAYLOAD"
-        fi
+        # تحقق واش المتغير ماشي
