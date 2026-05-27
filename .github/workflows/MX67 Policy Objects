@@ -1,0 +1,170 @@
+name: CrowdSec to Meraki MX67 Policy Objects
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 * * * *"
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install requests
+
+      - name: Sync CrowdSec IPs via Policy Objects
+        env:
+          MERAKI_API_KEY: ${{ secrets.MERAKI_API_KEY }}
+          MERAKI_NETWORK_ID: ${{ secrets.MERAKI_NETWORK_ID }}
+          MERAKI_ORGANIZATION_ID: ${{ secrets.MERAKI_ORGANIZATION_ID }}
+        run: |
+          cat > sync.py << 'EOF'
+          import os
+          import ipaddress
+          import requests
+          import time
+
+          BLOCKLIST_URL = "https://raw.githubusercontent.com/LittleJake/ip-blacklist/refs/heads/main/ustc_blacklist_ip.txt"
+          API_KEY = os.environ["MERAKI_API_KEY"]
+          NETWORK_ID = os.environ["MERAKI_NETWORK_ID"]
+          ORG_ID = os.environ["MERAKI_ORGANIZATION_ID"]
+
+          headers = {
+              "X-Cisco-Meraki-API-Key": API_KEY,
+              "Content-Type": "application/json"
+          }
+
+          def meraki_request(method, url, json=None):
+              while True:
+                  r = requests.request(method, url, headers=headers, json=json, timeout=30)
+                  if r.status_code == 429:
+                      time.sleep(2)
+                      continue
+                  r.raise_for_status()
+                  return r.json() if r.text else None
+
+          print("Downloading blocklist...")
+          response = requests.get(BLOCKLIST_URL, timeout=120)
+          response.raise_for_status()
+
+          ips = []
+          for line in response.text.splitlines():
+              line = line.strip()
+              if not line or line.startswith("#"):
+                  continue
+              try:
+                  ips.append(str(ipaddress.ip_network(f"{line}/32")))
+              except Exception:
+                  pass
+
+          target_cidrs = list(set(ips))[:4000]
+          print(f"Total unique targets: {len(target_cidrs)}")
+
+          print("Fetching existing policy objects...")
+          all_objects = meraki_request("GET", f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/policyObjects")
+          crowdsec_objects = {obj["cidr"]: obj["id"] for obj in all_objects if obj.get("name", "").startswith("CS_")}
+
+          current_cidrs = set(crowdsec_objects.keys())
+          needed_cidrs = set(target_cidrs)
+
+          to_delete = current_cidrs - needed_cidrs
+          to_create = needed_cidrs - current_cidrs
+
+          print(f"Deleting {len(to_delete)} obsolete objects...")
+          for cidr in to_delete:
+              obj_id = crowdsec_objects[cidr]
+              try:
+                  meraki_request("DELETE", f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/policyObjects/{obj_id}")
+                  del crowdsec_objects[cidr]
+              except Exception:
+                  pass
+
+          print(f"Creating {len(to_create)} new objects...")
+          for cidr in to_create:
+              payload = {
+                  "name": f"CS_{cidr.replace('/', '_').replace('.', '_')}",
+                  "type": "network",
+                  "category": "network",
+                  "cidr": cidr
+              }
+              try:
+                  obj = meraki_request("POST", f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/policyObjects", json=payload)
+                  crowdsec_objects[cidr] = obj["id"]
+              except Exception:
+                  pass
+
+          print("Managing Policy Object Group...")
+          groups = meraki_request("GET", f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/policyObjectGroups")
+          group_id = None
+          for g in groups:
+              if g["name"] == "CrowdSec_Blacklist_Group":
+                  group_id = g["id"]
+                  break
+
+          object_ids = [crowdsec_objects[cidr] for cidr in target_cidrs if cidr in crowdsec_objects]
+          object_ids = object_ids[:4000]
+
+          group_payload = {
+              "name": "CrowdSec_Blacklist_Group",
+              "objectIds": object_ids
+          }
+
+          if group_id:
+              meraki_request("PUT", f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/policyObjectGroups/{group_id}", json=group_payload)
+          else:
+              g = meraki_request("POST", f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/policyObjectGroups", json=group_payload)
+              group_id = g["id"]
+
+          print("Updating L3 Firewall rules...")
+          fw_url = f"https://api.meraki.com/api/v1/networks/{NETWORK_ID}/appliance/firewall/l3FirewallRules"
+          existing_fw = meraki_request("GET", fw_url)
+          existing_rules = existing_fw.get("rules", [])
+
+          manual_rules = [
+              r for r in existing_rules 
+              if r.get("comment") != "CrowdSec Auto Block" and r.get("comment") != "CrowdSec Group Block"
+          ]
+
+          has_allow_all = any(
+              r.get("srcCidr") == "Any" and 
+              r.get("destCidr") == "Any" and 
+              r.get("policy") == "allow" 
+              for r in manual_rules
+          )
+
+          if not has_allow_all:
+              manual_rules.append({
+                  "comment": "Default Allow",
+                  "policy": "allow",
+                  "protocol": "any",
+                  "srcPort": "Any",
+                  "srcCidr": "Any",
+                  "destPort": "Any",
+                  "destCidr": "Any",
+                  "syslogEnabled": False
+              })
+
+          group_rule = {
+              "comment": "CrowdSec Group Block",
+              "policy": "deny",
+              "protocol": "any",
+              "srcPort": "Any",
+              "srcCidr": f"object:{group_id}",
+              "destPort": "Any",
+              "destCidr": "Any",
+              "syslogEnabled": False
+          }
+
+          final_rules = [group_rule] + manual_rules
+          meraki_request("PUT", fw_url, json={"rules": final_rules})
+          print("Done.")
+          EOF
+
+          python sync.py
