@@ -30,6 +30,7 @@ jobs:
           import ipaddress
           import requests
           import time
+          from concurrent.futures import ThreadPoolExecutor, as_completed
 
           BLOCKLIST_URL = "https://raw.githubusercontent.com/LittleJake/ip-blacklist/refs/heads/main/ustc_blacklist_ip.txt"
           API_KEY = os.environ["MERAKI_API_KEY"]
@@ -78,16 +79,27 @@ jobs:
           to_create = needed_cidrs - current_cidrs
 
           print(f"Deleting {len(to_delete)} obsolete objects...")
-          for cidr in to_delete:
+          def delete_obj(cidr):
               obj_id = crowdsec_objects[cidr]
               try:
                   meraki_request("DELETE", f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/policyObjects/{obj_id}")
-                  del crowdsec_objects[cidr]
+                  return cidr, True
               except Exception:
-                  pass
+                  return cidr, False
+
+          deleted_count = 0
+          with ThreadPoolExecutor(max_workers=5) as executor:
+              futures = {executor.submit(delete_obj, cidr): cidr for cidr in to_delete}
+              for future in as_completed(futures):
+                  cidr, success = future.result()
+                  if success:
+                      del crowdsec_objects[cidr]
+                  deleted_count += 1
+                  if deleted_count % 50 == 0 or deleted_count == len(to_delete):
+                      print(f"Progress: Deleted {deleted_count}/{len(to_delete)} objects")
 
           print(f"Creating {len(to_create)} new objects...")
-          for cidr in to_create:
+          def create_obj(cidr):
               payload = {
                   "name": f"CS_{cidr.replace('/', '_').replace('.', '_')}",
                   "type": "network",
@@ -95,10 +107,21 @@ jobs:
                   "cidr": cidr
               }
               try:
-                  obj = meraki_request("POST", f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/policyObjects", json=payload)
-                  crowdsec_objects[cidr] = obj["id"]
+                  res = meraki_request("POST", f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/policyObjects", json=payload)
+                  return cidr, res
               except Exception:
-                  pass
+                  return cidr, None
+
+          created_count = 0
+          with ThreadPoolExecutor(max_workers=5) as executor:
+              futures = {executor.submit(create_obj, cidr): cidr for cidr in to_create}
+              for future in as_completed(futures):
+                  cidr, res = future.result()
+                  if res:
+                      crowdsec_objects[cidr] = res["id"]
+                  created_count += 1
+                  if created_count % 50 == 0 or created_count == len(to_create):
+                      print(f"Progress: Created {created_count}/{len(to_create)} objects")
 
           print("Managing Policy Object Group...")
           groups = meraki_request("GET", f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/policyObjectGroups")
