@@ -1,10 +1,10 @@
-name: Update Meraki Split DNS
+name: Update Meraki DNS
 
 on:
   workflow_dispatch:
 
 jobs:
-  update-split-dns:
+  update-dns:
     runs-on: ubuntu-latest
     steps:
       - name: Setup Python
@@ -27,7 +27,6 @@ jobs:
           API_KEY = os.environ["MERAKI_API_KEY"]
           ORG_ID = os.environ["MERAKI_ORGANIZATION_ID"]
           NET_NAME = "MX67"
-          PROFILE_NAME = "Custom DNS Profile"
 
           headers = {
               "X-Cisco-Meraki-API-Key": API_KEY,
@@ -47,52 +46,15 @@ jobs:
               print("Network not found")
               exit(1)
 
-          profiles_url = f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/appliance/dns/split/profiles"
-          profiles_res = requests.get(profiles_url, headers=headers)
-          
-          if profiles_res.status_code != 200:
-              print(f"Failed to fetch profiles. Status: {profiles_res.status_code}, Response: {profiles_res.text}")
-              exit(1)
-
-          profiles_data = profiles_res.json()
-          profiles = profiles_data.get("items", [])
-          
-          profile_id = None
-          for p in profiles:
-              if isinstance(p, dict) and p.get("name") == PROFILE_NAME:
-                  profile_id = p.get("profileId")
-                  break
+          lan_url = f"https://api.meraki.com/api/v1/networks/{net_id}/appliance/singleLan"
+          current_lan = requests.get(lan_url, headers=headers).json()
 
           payload = {
-              "name": PROFILE_NAME,
-              "hostnames": ["*"],
-              "nameservers": {
-                  "addresses": ["172.64.36.1"]
-              }
+              "subnet": current_lan["subnet"],
+              "applianceIp": current_lan["applianceIp"],
+              "dnsNameservers": "custom",
+              "customNameservers": ["172.64.36.1"]
           }
 
-          if profile_id:
-              print("Updating existing Split DNS Profile...")
-              update_url = f"{profiles_url}/{profile_id}"
-              res = requests.put(update_url, headers=headers, json=payload)
-              print(f"Profile Status: {res.status_code}, Response: {res.text}")
-          else:
-              print("Creating new Split DNS Profile...")
-              res = requests.post(profiles_url, headers=headers, json=payload)
-              print(f"Profile Status: {res.status_code}, Response: {res.text}")
-              if res.status_code in [200, 201]:
-                  profile_id = res.json().get("profileId")
-
-          if profile_id:
-              print("Assigning Profile to Network...")
-              assign_url = f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/appliance/dns/split/profiles/assignments"
-              assign_payload = {
-                  "assignments": [
-                      {
-                          "networkId": net_id,
-                          "profileId": profile_id
-                      }
-                  ]
-              }
-              assign_res = requests.post(assign_url, headers=headers, json=assign_payload)
-              print(f"Assignment Status: {assign_res.status_code}, Response: {assign_res.text}")
+          res = requests.put(lan_url, headers=headers, json=payload)
+          print(f"Status: {res.status_code}, Response: {res.text}")
