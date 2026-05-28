@@ -1,4 +1,4 @@
-name: Update Meraki DNS Final Try
+name: Update Meraki DNS
 
 on:
   workflow_dispatch:
@@ -15,7 +15,7 @@ jobs:
       - name: Install dependencies
         run: pip install requests
 
-      - name: Execute Script
+      - name: Run DNS Script
         env:
           MERAKI_API_KEY: ${{ secrets.MERAKI_API_KEY }}
           MERAKI_ORGANIZATION_ID: ${{ secrets.MERAKI_ORGANIZATION_ID }}
@@ -35,12 +35,7 @@ jobs:
 
           networks_url = f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/networks"
           networks = requests.get(networks_url, headers=headers).json()
-          
-          net_id = None
-          for net in networks:
-              if net["name"] == NET_NAME:
-                  net_id = net["id"]
-                  break
+          net_id = next((n["id"] for n in networks if n["name"] == NET_NAME), None)
 
           if not net_id:
               print("Network not found")
@@ -48,14 +43,17 @@ jobs:
 
           lan_url = f"https://api.meraki.com/api/v1/networks/{net_id}/appliance/singleLan"
           
+          # هاد الـ Payload هو لي خاص يفرصي الـ DNS
           payload = {
               "subnet": "192.168.128.0/24",
               "applianceIp": "192.168.128.1",
               "dnsNameservers": "custom",
               "dnsCustomNameservers": ["172.64.36.1"],
               "dhcpHandling": "Run a DHCP server",
-              "dhcpLeaseTime": "1 day"
+              "dhcpLeaseTime": "1 day",
+              "ipv6": {"enabled": False}
           }
 
           res = requests.put(lan_url, headers=headers, json=payload)
-          print(f"Status: {res.status_code}, Response: {res.text}")
+          print(f"Status: {res.status_code}")
+          print(f"Response: {res.text}")
