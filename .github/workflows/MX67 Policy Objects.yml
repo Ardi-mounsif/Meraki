@@ -121,8 +121,7 @@ jobs:
           def create_obj(cidr):
               payload = {
                   "name": f"CS_{cidr.replace('/', '_').replace('.', '_')}",
-                  "type": "network",
-                  "category": "network",
+                  "type": "cidr",
                   "cidr": cidr
               }
               try:
