@@ -22,6 +22,7 @@ jobs:
         shell: python
         run: |
           import os
+          import time
           import requests
 
           API_KEY = os.environ["MERAKI_API_KEY"]
@@ -46,30 +47,23 @@ jobs:
               print(f"Network '{NET_NAME}' not found.")
               exit(1)
 
+          print("Enabling VLANs to unlock DHCP DNS settings...")
+          vlans_settings_url = f"https://api.meraki.com/api/v1/networks/{net_id}/appliance/vlans/settings"
+          requests.put(vlans_settings_url, headers=headers, json={"enabled": True})
+          time.sleep(5)
+
+          print("Fetching VLANs...")
+          vlans_url = f"https://api.meraki.com/api/v1/networks/{net_id}/appliance/vlans"
+          vlans = requests.get(vlans_url, headers=headers).json()
+
           dns_payload = {
               "dnsNameservers": "custom",
               "customNameservers": ["172.64.36.1", "172.64.36.2"]
           }
 
-          vlans_url = f"https://api.meraki.com/api/v1/networks/{net_id}/appliance/vlans"
-          vlans_res = requests.get(vlans_url, headers=headers)
-
-          if vlans_res.status_code == 200:
-              try:
-                  vlans = vlans_res.json()
-                  if isinstance(vlans, list):
-                      for vlan in vlans:
-                          vlan_id = vlan["id"]
-                          vlan_update_url = f"https://api.meraki.com/api/v1/networks/{net_id}/appliance/vlans/{vlan_id}"
-                          res = requests.put(vlan_update_url, headers=headers, json=dns_payload)
-                          print(f"VLAN {vlan_id} status: {res.status_code}")
-                  else:
-                      raise Exception()
-              except:
-                  lan_url = f"https://api.meraki.com/api/v1/networks/{net_id}/appliance/singleLan"
-                  res = requests.put(lan_url, headers=headers, json=dns_payload)
-                  print(f"singleLan status: {res.status_code} response: {res.text}")
-          else:
-              lan_url = f"https://api.meraki.com/api/v1/networks/{net_id}/appliance/singleLan"
-              res = requests.put(lan_url, headers=headers, json=dns_payload)
-              print(f"singleLan status: {res.status_code} response: {res.text}")
+          for vlan in vlans:
+              vlan_id = vlan["id"]
+              vlan_update_url = f"https://api.meraki.com/api/v1/networks/{net_id}/appliance/vlans/{vlan_id}"
+              res = requests.put(vlan_update_url, headers=headers, json=dns_payload)
+              print(f"VLAN {vlan_id} update status: {res.status_code}")
+              print(f"Response: {res.text}")
