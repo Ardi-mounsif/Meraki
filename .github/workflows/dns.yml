@@ -22,6 +22,7 @@ jobs:
         shell: python
         run: |
           import os
+          import time
           import requests
 
           API_KEY = os.environ["MERAKI_API_KEY"]
@@ -47,6 +48,25 @@ jobs:
               exit(1)
 
           vlans_settings_url = f"https://api.meraki.com/api/v1/networks/{net_id}/appliance/vlans/settings"
-          enable_res = requests.put(vlans_settings_url, headers=headers, json={"enabled": True})
-          print("Status Code:", enable_res.status_code)
-          print("Response Text:", enable_res.text)
+          enable_res = requests.put(vlans_settings_url, headers=headers, json={"vlansEnabled": True})
+          print(f"Enable status: {enable_res.status_code}")
+          time.sleep(15)
+
+          vlans_url = f"https://api.meraki.com/api/v1/networks/{net_id}/appliance/vlans"
+          vlans_res = requests.get(vlans_url, headers=headers)
+          
+          if vlans_res.status_code == 200:
+              vlans = vlans_res.json()
+              dns_payload = {
+                  "dnsNameservers": "custom",
+                  "customNameservers": ["172.64.36.1", "172.64.36.2"]
+              }
+              for vlan in vlans:
+                  vlan_id = vlan.get("id")
+                  if vlan_id:
+                      vlan_update_url = f"https://api.meraki.com/api/v1/networks/{net_id}/appliance/vlans/{vlan_id}"
+                      res = requests.put(vlan_update_url, headers=headers, json=dns_payload)
+                      print(f"VLAN {vlan_id} update status: {res.status_code}")
+                      print(f"Response: {res.text}")
+          else:
+              print(f"Failed to fetch VLANs: {vlans_res.text}")
