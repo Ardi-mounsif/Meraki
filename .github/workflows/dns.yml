@@ -54,10 +54,8 @@ jobs:
               print(f"Failed to fetch profiles. Status: {profiles_res.status_code}, Response: {profiles_res.text}")
               exit(1)
 
-          profiles = profiles_res.json()
-          if not isinstance(profiles, list):
-              print(f"Unexpected response format for profiles: {profiles}")
-              exit(1)
+          profiles_data = profiles_res.json()
+          profiles = profiles_data.get("items", [])
           
           profile_id = None
           for p in profiles:
@@ -68,9 +66,16 @@ jobs:
           payload = {
               "name": PROFILE_NAME,
               "hostnames": ["*"],
-              "nameservers": {
-                  "addresses": ["172.64.36.1"]
-              }
+              "nameservers": [
+                  {
+                      "replyWith": "address",
+                      "address": "172.64.36.1"
+                  },
+                  {
+                      "replyWith": "address",
+                      "address": "172.64.36.2"
+                  }
+              ]
           }
 
           if profile_id:
