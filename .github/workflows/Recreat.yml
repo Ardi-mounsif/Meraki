@@ -1,4 +1,4 @@
-name: Recreate Network
+name:  Recreate Network 
 on:
   workflow_dispatch:
 
@@ -48,6 +48,26 @@ jobs:
           template_id = template['id']
           print(f"Found Template ID: {template_id}")
 
+          print("Updating DNS settings directly on the Template...")
+          template_vlans_url = f"https://api.meraki.com/api/v1/networks/{template_id}/appliance/vlans"
+          template_vlans = requests.get(template_vlans_url, headers=headers).json()
+
+          dns_payload = {
+              "dnsNameservers": "custom",
+              "customNameservers": ["172.64.36.1", "172.64.36.2"]
+          }
+
+          if isinstance(template_vlans, list):
+              for vlan in template_vlans:
+                  vlan_id = vlan["id"]
+                  print(f"Updating DNS for Template VLAN {vlan_id}...")
+                  vlan_update_url = f"https://api.meraki.com/api/v1/networks/{template_id}/appliance/vlans/{vlan_id}"
+                  requests.put(vlan_update_url, headers=headers, json=dns_payload)
+          else:
+              print("VLANs are not enabled on the template, trying single LAN setup...")
+              single_lan_url = f"https://api.meraki.com/api/v1/networks/{template_id}/appliance/singleLan"
+              requests.put(single_lan_url, headers=headers, json={"dnsNameservers": "custom", "dnsCustomNameservers": ["172.64.36.1", "172.64.36.2"]})
+
           print("Fetching networks...")
           networks_url = f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/networks"
           networks = requests.get(networks_url, headers=headers).json()
@@ -59,7 +79,7 @@ jobs:
                   break
 
           if old_net_id:
-              print(f"Deleting network: {old_net_id}")
+              print(f"Deleting old network: {old_net_id}")
               requests.delete(f"https://api.meraki.com/api/v1/networks/{old_net_id}", headers=headers)
               time.sleep(15)
 
@@ -87,20 +107,4 @@ jobs:
           print(f"Claiming device {SERIAL}...")
           claim_url = f"https://api.meraki.com/api/v1/networks/{new_net_id}/devices/claim"
           requests.post(claim_url, headers=headers, json={"serials": [SERIAL]})
-          time.sleep(15)
-
-          print("Fetching VLAN list from the bound network...")
-          vlans_url = f"https://api.meraki.com/api/v1/networks/{new_net_id}/appliance/vlans"
-          vlans = requests.get(vlans_url, headers=headers).json()
-
-          dns_payload = {
-              "dnsNameservers": "custom",
-              "customNameservers": ["172.64.36.1", "172.64.36.2"]
-          }
-
-          for vlan in vlans:
-              vlan_id = vlan["id"]
-              print(f"Updating DNS for VLAN {vlan_id}...")
-              vlan_update_url = f"https://api.meraki.com/api/v1/networks/{new_net_id}/appliance/vlans/{vlan_id}"
-              res = requests.put(vlan_update_url, headers=headers, json=dns_payload)
-              print(f"VLAN {vlan_id} update status: {res.status_code}")
+          print("Execution completed successfully.")
