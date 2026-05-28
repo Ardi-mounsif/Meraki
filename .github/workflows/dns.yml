@@ -1,4 +1,4 @@
-name: Update Meraki DNS Fixed
+name: Update Meraki DNS Final Try
 
 on:
   workflow_dispatch:
@@ -52,7 +52,7 @@ jobs:
               "subnet": "192.168.128.0/24",
               "applianceIp": "192.168.128.1",
               "dnsNameservers": "custom",
-              "customNameservers": ["172.64.36.1"],
+              "dnsCustomNameservers": ["172.64.36.1"],
               "dhcpHandling": "Run a DHCP server",
               "dhcpLeaseTime": "1 day"
           }
