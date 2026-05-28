@@ -1,4 +1,4 @@
-name: Meraki API Test Connection
+name: Meraki Single Object Test
 
 on:
   workflow_dispatch:
@@ -18,10 +18,9 @@ jobs:
           pip install requests
 
           
-      - name: Run Meraki Diagnostic Test
+      - name: Test Single Object Creation
         env:
           MERAKI_API_KEY: ${{ secrets.MERAKI_API_KEY }}
-          MERAKI_NETWORK_ID: ${{ secrets.MERAKI_NETWORK_ID }}
           MERAKI_ORGANIZATION_ID: ${{ secrets.MERAKI_ORGANIZATION_ID }}
           PYTHONUNBUFFERED: "1"
         shell: python
@@ -31,44 +30,22 @@ jobs:
 
           api_key = os.environ.get("MERAKI_API_KEY")
           org_id = os.environ.get("MERAKI_ORGANIZATION_ID")
-          net_id = os.environ.get("MERAKI_NETWORK_ID")
 
           headers = {
               "X-Cisco-Meraki-API-Key": api_key,
               "Content-Type": "application/json"
           }
 
-          print("--- 1. Fetching All Accessible Organizations ---", flush=True)
-          try:
-              r = requests.get("https://api.meraki.com/api/v1/organizations", headers=headers, timeout=30)
-              r.raise_for_status()
-              orgs = r.json()
-              print(f"Total organizations found: {len(orgs)}", flush=True)
-              for o in orgs:
-                  print(f"Organization Name: {o.get('name')} | ID: {o.get('id')}", flush=True)
-          except Exception as e:
-              print(f"Failed to fetch organizations: {e}", flush=True)
+          payload = {
+              "name": "CS_Test_Object",
+              "type": "network",
+              "category": "network",
+              "cidr": "1.1.1.1/32"
+          }
 
-          if org_id:
-              print(f"\n--- 2. Checking Networks in Org ID: {org_id} ---", flush=True)
-              try:
-                  r = requests.get(f"https://api.meraki.com/api/v1/organizations/{org_id}/networks", headers=headers, timeout=30)
-                  r.raise_for_status()
-                  networks = r.json()
-                  print(f"Total networks found in this org: {len(networks)}", flush=True)
-                  for n in networks:
-                      is_match = " [MATCHES SECRET]" if n.get('id') == net_id else ""
-                      print(f"Network Name: {n.get('name')} | ID: {n.get('id')}{is_match}", flush=True)
-              except Exception as e:
-                  print(f"Failed to fetch networks for this org: {e}", flush=True)
-
-              print(f"\n--- 3. Checking Existing Policy Objects in Org ID: {org_id} ---", flush=True)
-              try:
-                  r = requests.get(f"https://api.meraki.com/api/v1/organizations/{org_id}/policyObjects?perPage=10", headers=headers, timeout=30)
-                  r.raise_for_status()
-                  objs = r.json()
-                  print(f"Found {len(objs)} objects in this org (showing first 10):", flush=True)
-                  for o in objs[:10]:
-                      print(f"Object Name: {o.get('name')} | CIDR: {o.get('cidr')}", flush=True)
-              except Exception as e:
-                  print(f"Failed to fetch policy objects: {e}", flush=True)
+          url = f"https://api.meraki.com/api/v1/organizations/{org_id}/policyObjects"
+          
+          print("Testing single object creation...", flush=True)
+          r = requests.post(url, headers=headers, json=payload, timeout=30)
+          print(f"Status Code: {r.status_code}", flush=True)
+          print(f"Response Body: {r.text}", flush=True)
