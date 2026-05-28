@@ -66,16 +66,9 @@ jobs:
           payload = {
               "name": PROFILE_NAME,
               "hostnames": ["*"],
-              "nameservers": [
-                  {
-                      "replyWith": "address",
-                      "address": "172.64.36.1"
-                  },
-                  {
-                      "replyWith": "address",
-                      "address": "172.64.36.2"
-                  }
-              ]
+              "nameservers": {
+                  "addresses": ["172.64.36.1", "172.64.36.2"]
+              }
           }
 
           if profile_id:
