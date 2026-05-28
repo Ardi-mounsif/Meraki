@@ -8,7 +8,6 @@ on:
 jobs:
   sync:
     runs-on: ubuntu-latest
-
     steps:
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -74,7 +73,7 @@ jobs:
           print("Fetching existing policy objects (with pagination)...", flush=True)
           all_objects = []
           objects_url = f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/policyObjects?perPage=1000"
-          
+
           while objects_url:
               res_page = meraki_request("GET", objects_url)
               all_objects.extend(res_page.json())
@@ -145,51 +144,10 @@ jobs:
                       print(f"Progress: Processed {created_count}/{len(to_create)} (Created: {success_created})", flush=True)
 
           object_ids = [crowdsec_objects[cidr] for cidr in target_cidrs if cidr in crowdsec_objects]
-          
+
           max_per_group = 150
           chunks = [object_ids[i:i + max_per_group] for i in range(0, len(object_ids), max_per_group)]
 
           print("Managing Policy Object Groups...", flush=True)
           groups = meraki_request("GET", f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/policyObjects/groups?perPage=1000").json()
-          existing_cs_groups = {g["name"]: g["id"] for g in groups if g["name"].startswith("CrowdSec_Grp_") or g["name"] == "CrowdSec_Blacklist_Group"}
-
-          active_group_ids = []
-          for idx, chunk in enumerate(chunks, 1):
-              group_name = f"CrowdSec_Grp_{idx}"
-              group_payload = {
-                  "name": group_name,
-                  "objectIds": chunk
-              }
-              if group_name in existing_cs_groups:
-                  g_id = existing_cs_groups[group_name]
-                  meraki_request("PUT", f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/policyObjects/groups/{g_id}", json=group_payload)
-                  active_group_ids.append(g_id)
-                  del existing_cs_groups[group_name]
-              else:
-                  g = meraki_request("POST", f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/policyObjects/groups", json=group_payload).json()
-                  active_group_ids.append(g["id"])
-
-          for old_group_name, old_g_id in existing_cs_groups.items():
-              try:
-                  meraki_request("DELETE", f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/policyObjects/groups/{old_g_id}")
-              except Exception:
-                  pass
-
-          print("Updating L3 Firewall rules...", flush=True)
-          fw_url = f"https://api.meraki.com/api/v1/networks/{NETWORK_ID}/appliance/firewall/l3FirewallRules"
-          existing_fw = meraki_request("GET", fw_url).json()
-          existing_rules = existing_fw.get("rules", [])
-
-          manual_rules = [
-              r for r in existing_rules 
-              if not r.get("comment", "").startswith("CrowdSec Group Block") and r.get("comment") != "CrowdSec Auto Block"
-          ]
-
-          has_allow_all = any(
-              r.get("srcCidr") == "Any" and 
-              r.get("destCidr") == "Any" and 
-              r.get("policy") == "allow" 
-              for r in manual_rules
-          )
-
-          if not has_allow_all:
+          existing_cs_groups = {g
