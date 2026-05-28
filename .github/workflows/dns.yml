@@ -1,4 +1,4 @@
-name: Meraki DNS Update Final
+name: Meraki DNS Forced Update
 
 on:
   workflow_dispatch:
@@ -29,17 +29,19 @@ jobs:
               networks = dashboard.organizations.getOrganizationNetworks(org['id'])
               for net in networks:
                   if net['name'] == 'MX67':
-                      # 1. جيب الإعدادات الحالية
+                      # جيب الإعدادات باش نضمنوا أننا كنخدموا بـ Structure صحيحة
                       current = dashboard.appliance.getNetworkApplianceSingleLan(net['id'])
                       
-                      # 2. التحديث مع التأكد من إدراج كافة الإعدادات الضرورية
+                      # التحديث مع إرسال جميع المتطلبات باش ميرَاكِي ما يرجعش لـ Proxy
                       dashboard.appliance.updateNetworkApplianceSingleLan(
                           net['id'],
                           subnet=current['subnet'],
                           applianceIp=current['applianceIp'],
-                          dhcpHandling=current.get('dhcpHandling', 'Run a DHCP server'),
-                          dhcpLeaseTime=current.get('dhcpLeaseTime', '1 day'),
+                          dhcpHandling=current['dhcpHandling'],
+                          dhcpLeaseTime=current['dhcpLeaseTime'],
                           dnsNameservers="custom",
-                          dnsCustomNameservers=["1.1.1.1", "8.8.8.8"]
+                          dnsCustomNameservers=["1.1.1.1", "8.8.8.8"],
+                          fixedIpAssignments=current.get('fixedIpAssignments', {}),
+                          reservedIpRanges=current.get('reservedIpRanges', [])
                       )
-                      print(f"Updated Network {net['name']} with forced DNS settings")
+                      print(f"Update command sent for {net['name']}")
