@@ -1,4 +1,4 @@
-name: Update Meraki to Google DNS
+name: Meraki DNS Update
 
 on:
   workflow_dispatch:
@@ -6,53 +6,76 @@ on:
 jobs:
   update-dns:
     runs-on: ubuntu-latest
+
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install requests
+        run: |
+          pip install meraki
 
-      - name: Run DNS Script
+      - name: Create script
+        run: |
+          cat > dns_update.py << 'EOF'
+          import meraki
+          import os
+
+          API_KEY = os.getenv("MERAKI_API_KEY")
+          # التعديل هنا: ليستة ديال الآي بيات
+          DNS_SERVERS = ["1.1.1.1", "8.8.8.8"]
+
+          dashboard = meraki.DashboardAPI(
+              API_KEY,
+              suppress_logging=True
+          )
+
+          orgs = dashboard.organizations.getOrganizations()
+
+          for org in orgs:
+              print(f"\nORG: {org['name']}")
+              networks = dashboard.organizations.getOrganizationNetworks(
+                  org['id'],
+                  total_pages='all'
+              )
+
+              for net in networks:
+                  if 'appliance' not in net.get('productTypes', []):
+                      continue
+
+                  network_id = net['id']
+                  print(f"\nNetwork: {net['name']}")
+
+                  try:
+                      settings = dashboard.appliance.getNetworkApplianceVlansSettings(network_id)
+                      if not settings.get("vlansEnabled"):
+                          print("VLANs disabled")
+                          continue
+
+                      vlans = dashboard.appliance.getNetworkApplianceVlans(network_id)
+
+                      for vlan in vlans:
+                          vlan_id = vlan['id']
+                          # التعديل هنا: تحديد نوع الـ DNS والآي بيات
+                          dashboard.appliance.updateNetworkApplianceVlan(
+                              network_id,
+                              vlan_id,
+                              dnsNameservers="custom",
+                              dnsCustomNameservers=DNS_SERVERS
+                          )
+                          print(f"Updated VLAN {vlan_id}")
+
+                  except Exception as e:
+                      print(f"ERROR: {e}")
+          EOF
+
+      - name: Run script
         env:
           MERAKI_API_KEY: ${{ secrets.MERAKI_API_KEY }}
-          MERAKI_ORGANIZATION_ID: ${{ secrets.MERAKI_ORGANIZATION_ID }}
-        shell: python
         run: |
-          import os
-          import requests
-
-          API_KEY = os.environ["MERAKI_API_KEY"]
-          ORG_ID = os.environ["MERAKI_ORGANIZATION_ID"]
-          NET_NAME = "MX67"
-
-          headers = {
-              "X-Cisco-Meraki-API-Key": API_KEY,
-              "Content-Type": "application/json"
-          }
-
-          networks_url = f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/networks"
-          networks = requests.get(networks_url, headers=headers).json()
-          net_id = next((n["id"] for n in networks if n["name"] == NET_NAME), None)
-
-          if not net_id:
-              print("Network not found")
-              exit(1)
-
-          lan_url = f"https://api.meraki.com/api/v1/networks/{net_id}/appliance/singleLan"
-          
-          # هنا درنا google_dns مباشرة
-          payload = {
-              "subnet": "192.168.128.0/24",
-              "applianceIp": "192.168.128.1",
-              "dnsNameservers": "google_dns",
-              "dhcpHandling": "Run a DHCP server",
-              "dhcpLeaseTime": "1 day",
-              "ipv6": {"enabled": False}
-          }
-
-          res = requests.put(lan_url, headers=headers, json=payload)
-          print(f"Status: {res.status_code}")
-          print(f"Response: {res.text}")
+          python dns_update.py
