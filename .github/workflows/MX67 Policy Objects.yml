@@ -24,6 +24,7 @@ jobs:
           MERAKI_API_KEY: ${{ secrets.MERAKI_API_KEY }}
           MERAKI_NETWORK_ID: ${{ secrets.MERAKI_NETWORK_ID }}
           MERAKI_ORGANIZATION_ID: ${{ secrets.MERAKI_ORGANIZATION_ID }}
+          PYTHONUNBUFFERED: "1"
         run: |
           cat > sync.py << 'EOF'
           import os
@@ -51,7 +52,7 @@ jobs:
                   r.raise_for_status()
                   return r.json() if r.text else None
 
-          print("Downloading blocklist...")
+          print("Downloading blocklist...", flush=True)
           response = requests.get(BLOCKLIST_URL, timeout=120)
           response.raise_for_status()
 
@@ -66,9 +67,9 @@ jobs:
                   pass
 
           target_cidrs = list(set(ips))[:4000]
-          print(f"Total unique targets: {len(target_cidrs)}")
+          print(f"Total unique targets: {len(target_cidrs)}", flush=True)
 
-          print("Fetching existing policy objects...")
+          print("Fetching existing policy objects...", flush=True)
           all_objects = meraki_request("GET", f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/policyObjects")
           crowdsec_objects = {obj["cidr"]: obj["id"] for obj in all_objects if obj.get("name", "").startswith("CS_")}
 
@@ -78,7 +79,7 @@ jobs:
           to_delete = current_cidrs - needed_cidrs
           to_create = needed_cidrs - current_cidrs
 
-          print(f"Deleting {len(to_delete)} obsolete objects...")
+          print(f"Deleting {len(to_delete)} obsolete objects...", flush=True)
           def delete_obj(cidr):
               obj_id = crowdsec_objects[cidr]
               try:
@@ -96,9 +97,9 @@ jobs:
                       del crowdsec_objects[cidr]
                   deleted_count += 1
                   if deleted_count % 50 == 0 or deleted_count == len(to_delete):
-                      print(f"Progress: Deleted {deleted_count}/{len(to_delete)} objects")
+                      print(f"Progress: Deleted {deleted_count}/{len(to_delete)} objects", flush=True)
 
-          print(f"Creating {len(to_create)} new objects...")
+          print(f"Creating {len(to_create)} new objects...", flush=True)
           def create_obj(cidr):
               payload = {
                   "name": f"CS_{cidr.replace('/', '_').replace('.', '_')}",
@@ -121,9 +122,9 @@ jobs:
                       crowdsec_objects[cidr] = res["id"]
                   created_count += 1
                   if created_count % 50 == 0 or created_count == len(to_create):
-                      print(f"Progress: Created {created_count}/{len(to_create)} objects")
+                      print(f"Progress: Created {created_count}/{len(to_create)} objects", flush=True)
 
-          print("Managing Policy Object Group...")
+          print("Managing Policy Object Group...", flush=True)
           groups = meraki_request("GET", f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/policyObjectGroups")
           group_id = None
           for g in groups:
@@ -145,49 +146,7 @@ jobs:
               g = meraki_request("POST", f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/policyObjectGroups", json=group_payload)
               group_id = g["id"]
 
-          print("Updating L3 Firewall rules...")
+          print("Updating L3 Firewall rules...", flush=True)
           fw_url = f"https://api.meraki.com/api/v1/networks/{NETWORK_ID}/appliance/firewall/l3FirewallRules"
           existing_fw = meraki_request("GET", fw_url)
           existing_rules = existing_fw.get("rules", [])
-
-          manual_rules = [
-              r for r in existing_rules 
-              if r.get("comment") != "CrowdSec Auto Block" and r.get("comment") != "CrowdSec Group Block"
-          ]
-
-          has_allow_all = any(
-              r.get("srcCidr") == "Any" and 
-              r.get("destCidr") == "Any" and 
-              r.get("policy") == "allow" 
-              for r in manual_rules
-          )
-
-          if not has_allow_all:
-              manual_rules.append({
-                  "comment": "Default Allow",
-                  "policy": "allow",
-                  "protocol": "any",
-                  "srcPort": "Any",
-                  "srcCidr": "Any",
-                  "destPort": "Any",
-                  "destCidr": "Any",
-                  "syslogEnabled": False
-              })
-
-          group_rule = {
-              "comment": "CrowdSec Group Block",
-              "policy": "deny",
-              "protocol": "any",
-              "srcPort": "Any",
-              "srcCidr": f"object:{group_id}",
-              "destPort": "Any",
-              "destCidr": "Any",
-              "syslogEnabled": False
-          }
-
-          final_rules = [group_rule] + manual_rules
-          meraki_request("PUT", fw_url, json={"rules": final_rules})
-          print("Done.")
-          EOF
-
-          python sync.py
