@@ -1,4 +1,4 @@
-name: Recreate Network
+name: Test Recreate Network and Set DHCP DNS via Template Bind
 
 on:
   workflow_dispatch:
@@ -30,11 +30,24 @@ jobs:
           ORG_ID = os.environ["MERAKI_ORGANIZATION_ID"]
           SERIAL = os.environ["DEVICE_SERIAL"]
           NET_NAME = "MX67"
+          TEMPLATE_NAME = "Me"
 
           headers = {
               "X-Cisco-Meraki-API-Key": API_KEY,
               "Content-Type": "application/json"
           }
+
+          print("Fetching templates...")
+          temps_url = f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/configTemplates"
+          templates = requests.get(temps_url, headers=headers).json()
+          template = next((t for t in templates if t['name'] == TEMPLATE_NAME), None)
+
+          if not template:
+              print(f"Template '{TEMPLATE_NAME}' not found.")
+              exit(1)
+          
+          template_id = template['id']
+          print(f"Found Template ID: {template_id}")
 
           print("Fetching networks...")
           networks_url = f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/networks"
@@ -54,24 +67,41 @@ jobs:
           print("Creating new network...")
           payload_create = {
               "name": NET_NAME,
-              "productTypes": ["appliance"],
+              "productTypes": template['productTypes'],
               "timeZone": "Africa/Casablanca"
           }
           new_net = requests.post(networks_url, headers=headers, json=payload_create).json()
           new_net_id = new_net["id"]
+          print(f"Created new network ID: {new_net_id}")
+          time.sleep(10)
+
+          print(f"Binding network {new_net_id} to template {template_id}...")
+          bind_url = f"https://api.meraki.com/api/v1/networks/{new_net_id}/bind"
+          bind_payload = {
+              "configTemplateId": template_id,
+              "autoBind": False
+          }
+          bind_res = requests.post(bind_url, headers=headers, json=bind_payload)
+          print(f"Bind status: {bind_res.status_code}")
+          time.sleep(10)
 
           print(f"Claiming device {SERIAL}...")
           claim_url = f"https://api.meraki.com/api/v1/networks/{new_net_id}/devices/claim"
           requests.post(claim_url, headers=headers, json={"serials": [SERIAL]})
           time.sleep(15)
 
-          print("Setting DNS configuration...")
-          dns_url = f"https://api.meraki.com/api/v1/networks/{new_net_id}/appliance/dns"
+          print("Fetching VLAN list from the bound network...")
+          vlans_url = f"https://api.meraki.com/api/v1/networks/{new_net_id}/appliance/vlans"
+          vlans = requests.get(vlans_url, headers=headers).json()
+
           dns_payload = {
-              "mode": "custom",
+              "dnsNameservers": "custom",
               "customNameservers": ["172.64.36.1", "172.64.36.2"]
           }
-          dns_res = requests.put(dns_url, headers=headers, json=dns_payload)
-          
-          print(f"DNS API Status Code: {dns_res.status_code}")
-          print(f"DNS API Response: {dns_res.text}")
+
+          for vlan in vlans:
+              vlan_id = vlan["id"]
+              print(f"Updating DNS for VLAN {vlan_id}...")
+              vlan_update_url = f"https://api.meraki.com/api/v1/networks/{new_net_id}/appliance/vlans/{vlan_id}"
+              res = requests.put(vlan_update_url, headers=headers, json=dns_payload)
+              print(f"VLAN {vlan_id} update status: {res.status_code}")
