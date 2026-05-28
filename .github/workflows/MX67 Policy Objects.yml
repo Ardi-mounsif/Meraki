@@ -26,7 +26,7 @@ jobs:
           MERAKI_ORGANIZATION_ID: ${{ secrets.MERAKI_ORGANIZATION_ID }}
           PYTHONUNBUFFERED: "1"
         run: |
-          cat > sync.py << 'EOF'
+          cat > sync.py << 'END_OF_SCRIPT'
           import os
           import ipaddress
           import requests
@@ -131,22 +131,3 @@ jobs:
               if g["name"] == "CrowdSec_Blacklist_Group":
                   group_id = g["id"]
                   break
-
-          object_ids = [crowdsec_objects[cidr] for cidr in target_cidrs if cidr in crowdsec_objects]
-          object_ids = object_ids[:4000]
-
-          group_payload = {
-              "name": "CrowdSec_Blacklist_Group",
-              "objectIds": object_ids
-          }
-
-          if group_id:
-              meraki_request("PUT", f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/policyObjectGroups/{group_id}", json=group_payload)
-          else:
-              g = meraki_request("POST", f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/policyObjectGroups", json=group_payload)
-              group_id = g["id"]
-
-          print("Updating L3 Firewall rules...", flush=True)
-          fw_url = f"https://api.meraki.com/api/v1/networks/{NETWORK_ID}/appliance/firewall/l3FirewallRules"
-          existing_fw = meraki_request("GET", fw_url)
-          existing_rules = existing_fw.get("rules", [])
