@@ -30,7 +30,7 @@ jobs:
           API_KEY = os.environ["MERAKI_API_KEY"]
           ORG_ID = os.environ["MERAKI_ORGANIZATION_ID"]
           SERIAL = os.environ["DEVICE_SERIAL"]
-          NET_NAME = "My-MX67-Network"
+          NET_NAME = "MX67"
           TEMPLATE_NAME = "Me"
 
           headers = {
