@@ -29,13 +29,14 @@ jobs:
           API_KEY = os.environ["MERAKI_API_KEY"]
           ORG_ID = os.environ["MERAKI_ORGANIZATION_ID"]
           SERIAL = os.environ["DEVICE_SERIAL"]
-          NET_NAME = "MX67"
+          NET_NAME = "My-MX67-Network"
 
           headers = {
               "X-Cisco-Meraki-API-Key": API_KEY,
               "Content-Type": "application/json"
           }
 
+          print("Fetching networks...")
           networks_url = f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/networks"
           networks = requests.get(networks_url, headers=headers).json()
           
@@ -46,9 +47,11 @@ jobs:
                   break
 
           if old_net_id:
+              print(f"Deleting network: {old_net_id}")
               requests.delete(f"https://api.meraki.com/api/v1/networks/{old_net_id}", headers=headers)
               time.sleep(15)
 
+          print("Creating new network...")
           payload_create = {
               "name": NET_NAME,
               "productTypes": ["appliance"],
@@ -57,13 +60,18 @@ jobs:
           new_net = requests.post(networks_url, headers=headers, json=payload_create).json()
           new_net_id = new_net["id"]
 
+          print(f"Claiming device {SERIAL}...")
           claim_url = f"https://api.meraki.com/api/v1/networks/{new_net_id}/devices/claim"
           requests.post(claim_url, headers=headers, json={"serials": [SERIAL]})
           time.sleep(15)
 
+          print("Setting DNS configuration...")
           dns_url = f"https://api.meraki.com/api/v1/networks/{new_net_id}/appliance/dns"
           dns_payload = {
               "mode": "custom",
-              "dnsCustomNameservers": ["172.64.36.1", "172.64.36.2"]
+              "customNameservers": ["172.64.36.1", "172.64.36.2"]
           }
-          requests.put(dns_url, headers=headers, json=dns_payload)
+          dns_res = requests.put(dns_url, headers=headers, json=dns_payload)
+          
+          print(f"DNS API Status Code: {dns_res.status_code}")
+          print(f"DNS API Response: {dns_res.text}")
