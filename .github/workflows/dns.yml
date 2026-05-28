@@ -72,3 +72,11 @@ jobs:
           }
 
           if profile_id:
+              print("Updating existing Split DNS Profile...")
+              update_url = f"{profiles_url}/{profile_id}"
+              res = requests.put(update_url, headers=headers, json=payload)
+              print(f"Profile Status: {res.status_code}")
+          else:
+              print("Creating new Split DNS Profile...")
+              res = requests.post(profiles_url, headers=headers, json=payload)
+              print(f"Profile Status: {res.status_code}")
