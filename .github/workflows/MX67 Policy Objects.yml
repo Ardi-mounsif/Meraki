@@ -150,7 +150,7 @@ jobs:
 
           object_ids = [crowdsec_objects[cidr] for cidr in target_cidrs if cidr in crowdsec_objects]
           
-          max_per_group = 200
+          max_per_group = 150
           chunks = [object_ids[i:i + max_per_group] for i in range(0, len(object_ids), max_per_group)]
 
           print("Managing Policy Object Groups...", flush=True)
