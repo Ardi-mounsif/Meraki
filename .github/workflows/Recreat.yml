@@ -1,6 +1,9 @@
-name:  Recreate Network 
+name: Test Recreate Network and Set DHCP DNS via Template Bind
+
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '0 4 */15 * *'
 
 jobs:
   recreate:
@@ -28,7 +31,7 @@ jobs:
           API_KEY = os.environ["MERAKI_API_KEY"]
           ORG_ID = os.environ["MERAKI_ORGANIZATION_ID"]
           SERIAL = os.environ["DEVICE_SERIAL"]
-          NET_NAME = "MX67"
+          NET_NAME = "My-MX67-Network"
           TEMPLATE_NAME = "Me"
 
           headers = {
