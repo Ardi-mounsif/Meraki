@@ -48,11 +48,20 @@ jobs:
               exit(1)
 
           profiles_url = f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/appliance/dns/split/profiles"
-          profiles = requests.get(profiles_url, headers=headers).json()
+          profiles_res = requests.get(profiles_url, headers=headers)
+          
+          if profiles_res.status_code != 200:
+              print(f"Failed to fetch profiles. Status: {profiles_res.status_code}, Response: {profiles_res.text}")
+              exit(1)
+
+          profiles = profiles_res.json()
+          if not isinstance(profiles, list):
+              print(f"Unexpected response format for profiles: {profiles}")
+              exit(1)
           
           profile_id = None
           for p in profiles:
-              if p.get("name") == PROFILE_NAME:
+              if isinstance(p, dict) and p.get("name") == PROFILE_NAME:
                   profile_id = p.get("profileId")
                   break
 
@@ -71,10 +80,11 @@ jobs:
           else:
               print("Creating new Split DNS Profile...")
               res = requests.post(profiles_url, headers=headers, json=payload)
-              if res.status_code == 201:
+              if res.status_code in [200, 201]:
                   profile_id = res.json().get("profileId")
 
           print(f"Profile Status: {res.status_code}")
+          print(f"Profile Response: {res.text}")
 
           if profile_id:
               print("Assigning Profile to Network...")
