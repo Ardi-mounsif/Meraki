@@ -133,7 +133,7 @@ jobs:
 
           created_count = 0
           with ThreadPoolExecutor(max_workers=5) as executor:
-              futures = {executor.submit(create_obj, cidr): cidr for cid r in to_create}
+              futures = {executor.submit(create_obj, cidr): cidr for cidr in to_create}
               for future in as_completed(futures):
                   cidr, res = future.result()
                   if res:
@@ -211,10 +211,4 @@ jobs:
                   "srcPort": "Any",
                   "srcCidr": f"object:group:{g_id}",
                   "destPort": "Any",
-                  "destCidr": "Any",
-                  "syslogEnabled": False
-              })
-
-          final_rules = group_rules + manual_rules
-          meraki_request("PUT", fw_url, json={"rules": final_rules})
-          print("Done.", flush=True)
+                  "
