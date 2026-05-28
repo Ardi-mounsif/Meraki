@@ -1,4 +1,4 @@
-name: Update Meraki DNS
+name: Update Meraki DNS Fixed
 
 on:
   workflow_dispatch:
@@ -47,13 +47,14 @@ jobs:
               exit(1)
 
           lan_url = f"https://api.meraki.com/api/v1/networks/{net_id}/appliance/singleLan"
-          current_lan = requests.get(lan_url, headers=headers).json()
-
+          
           payload = {
-              "subnet": current_lan["subnet"],
-              "applianceIp": current_lan["applianceIp"],
+              "subnet": "192.168.128.0/24",
+              "applianceIp": "192.168.128.1",
               "dnsNameservers": "custom",
-              "customNameservers": ["172.64.36.1"]
+              "customNameservers": ["172.64.36.1"],
+              "dhcpHandling": "Run a DHCP server",
+              "dhcpLeaseTime": "1 day"
           }
 
           res = requests.put(lan_url, headers=headers, json=payload)
