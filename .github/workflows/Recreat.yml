@@ -29,7 +29,7 @@ jobs:
           API_KEY = os.environ["MERAKI_API_KEY"]
           ORG_ID = os.environ["MERAKI_ORGANIZATION_ID"]
           SERIAL = os.environ["DEVICE_SERIAL"]
-          NET_NAME = "My-MX67-Network"
+          NET_NAME = "MX67"
 
           headers = {
               "X-Cisco-Meraki-API-Key": API_KEY,
@@ -63,15 +63,21 @@ jobs:
           print(f"Claiming device {SERIAL}...")
           claim_url = f"https://api.meraki.com/api/v1/networks/{new_net_id}/devices/claim"
           requests.post(claim_url, headers=headers, json={"serials": [SERIAL]})
-          time.sleep(15)
+          time.sleep(30)
 
-          print("Setting DNS configuration...")
-          dns_url = f"https://api.meraki.com/api/v1/networks/{new_net_id}/appliance/dns"
-          dns_payload = {
-              "mode": "custom",
+          print("Setting DNS configuration via singleLan...")
+          lan_url = f"https://api.meraki.com/api/v1/networks/{new_net_id}/appliance/singleLan"
+          
+          lan_data = requests.get(lan_url, headers=headers).json()
+          
+          lan_payload = {
+              "subnet": lan_data.get("subnet"),
+              "applianceIp": lan_data.get("applianceIp"),
+              "dnsNameservers": "custom",
               "customNameservers": ["172.64.36.1", "172.64.36.2"]
           }
-          dns_res = requests.put(dns_url, headers=headers, json=dns_payload)
+          
+          dns_res = requests.put(lan_url, headers=headers, json=lan_payload)
           
           print(f"DNS API Status Code: {dns_res.status_code}")
           print(f"DNS API Response: {dns_res.text}")
