@@ -1,4 +1,4 @@
-name: Recreate and Bind with Validation
+name: Recreate and Bind Network
 
 on:
   workflow_dispatch:
@@ -11,8 +11,10 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
       - name: Install dependencies
         run: pip install requests
+
       - name: Execute Script
         env:
           MERAKI_API_KEY: ${{ secrets.MERAKI_API_KEY }}
@@ -30,22 +32,23 @@ jobs:
           NET_NAME = "MX67"
           TEMPLATE_NAME = "Me"
 
-          headers = {"X-Cisco-Meraki-API-Key": API_KEY, "Content-Type": "application/json"}
+          headers = {
+              "X-Cisco-Meraki-API-Key": API_KEY,
+              "Content-Type": "application/json"
+          }
 
-          # 1. جيب الـ ID ديال التمبليت
+          # 1. جيب التمبليت
           temps_url = f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/configTemplates"
           templates = requests.get(temps_url, headers=headers).json()
           template = next((t for t in templates if t['name'] == TEMPLATE_NAME), None)
           
           if not template:
-              print("Template 'Me' not found.")
+              print(f"Error: Template '{TEMPLATE_NAME}' not found.")
               exit(1)
           
           template_id = template['id']
-          # خاص الـ productTypes د النيتورك الجديدة يكونو بحال التمبليت
-          template_product_types = template['productTypes']
-          
-          # 2. حذف النيتورك القديمة
+
+          # 2. حذف النيتورك
           networks_url = f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/networks"
           networks = requests.get(networks_url, headers=headers).json()
           for net in networks:
@@ -53,32 +56,32 @@ jobs:
                   requests.delete(f"https://api.meraki.com/api/v1/networks/{net['id']}", headers=headers)
                   time.sleep(10)
 
-          # 3. إنشاء نيتورك جديدة ب نفس الـ productTypes د التمبليت
+          # 3. كريي نيتورك جديدة
           payload_create = {
               "name": NET_NAME, 
-              "productTypes": template_product_types, 
+              "productTypes": ["appliance"], 
               "timeZone": "Africa/Casablanca"
           }
           new_net = requests.post(networks_url, headers=headers, json=payload_create).json()
-          new_net_id = new_net["id"]
-          print(f"Created network with ID: {new_net_id}")
-          time.sleep(5)
+          new_net_id = new_net['id']
+          print(f"Created new network ID: {new_net_id}")
+          time.sleep(15)
 
-          # 4. الربط بالتمبليت
+          # 4. Bind (الـ URL الصحيح)
           bind_url = f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/networks/bind"
-          bind_payload = {"networkIds": [new_net_id], "configTemplateId": template_id}
+          bind_payload = {
+              "networkIds": [new_net_id],
+              "configTemplateId": template_id
+          }
           res = requests.post(bind_url, headers=headers, json=bind_payload)
           
-          # نشوفو واش الربط داز مزيان
           if res.status_code == 200:
-              print("Network successfully bound to template.")
+              print("Bind Success")
           else:
-              print(f"Failed to bind. Status code: {res.status_code}, Response: {res.text}")
+              print(f"Bind Failed. Status: {res.status_code}")
+              print(f"Response: {res.text}")
               exit(1)
-          
-          time.sleep(5)
-          
-          # 5. إضافة الجهاز
+
+          # 5. Claim
           claim_url = f"https://api.meraki.com/api/v1/networks/{new_net_id}/devices/claim"
           requests.post(claim_url, headers=headers, json={"serials": [SERIAL]})
-          print("Device claimed.")
