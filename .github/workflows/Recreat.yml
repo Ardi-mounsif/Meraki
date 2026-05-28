@@ -1,5 +1,4 @@
-name: Test Recreate Network and Set DHCP DNS via Template Bind
-
+name: Recreate Network
 on:
   workflow_dispatch:
   schedule:
