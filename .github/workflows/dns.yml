@@ -1,4 +1,4 @@
-name: Meraki DNS Update
+name: Meraki DNS Update Final
 
 on:
   workflow_dispatch:
@@ -29,9 +29,14 @@ jobs:
               networks = dashboard.organizations.getOrganizationNetworks(org['id'])
               for net in networks:
                   if net['name'] == 'MX67':
-                      # هنا كنبذلو لـ Single LAN عوض VLANs
+                      # 1. جيب الاعدادات الحالية باش تاخد السابنيت والآي بي
+                      current = dashboard.appliance.getNetworkApplianceSingleLan(net['id'])
+                      
+                      # 2. استعمل هاد الاعدادات ف التحديث باش ميرَاكِي ما يعطيش غلط
                       dashboard.appliance.updateNetworkApplianceSingleLan(
                           net['id'],
+                          subnet=current['subnet'],
+                          applianceIp=current['applianceIp'],
                           dnsNameservers="custom",
                           dnsCustomNameservers=["1.1.1.1", "8.8.8.8"]
                       )
