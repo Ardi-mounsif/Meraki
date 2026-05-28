@@ -126,6 +126,7 @@ jobs:
               payload = {
                   "name": f"CS_{cidr.replace('/', '_').replace('.', '_')}",
                   "type": "cidr",
+                  "category": "network",
                   "cidr": cidr
               }
               try:
