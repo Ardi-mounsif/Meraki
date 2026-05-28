@@ -1,4 +1,4 @@
-name: Update Meraki DNS
+name: Update Meraki to Google DNS
 
 on:
   workflow_dispatch:
@@ -43,12 +43,11 @@ jobs:
 
           lan_url = f"https://api.meraki.com/api/v1/networks/{net_id}/appliance/singleLan"
           
-          # هاد الـ Payload هو لي خاص يفرصي الـ DNS
+          # هنا درنا google_dns مباشرة
           payload = {
               "subnet": "192.168.128.0/24",
               "applianceIp": "192.168.128.1",
-              "dnsNameservers": "custom",
-              "dnsCustomNameservers": ["172.64.36.1"],
+              "dnsNameservers": "google_dns",
               "dhcpHandling": "Run a DHCP server",
               "dhcpLeaseTime": "1 day",
               "ipv6": {"enabled": False}
