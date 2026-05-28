@@ -1,10 +1,10 @@
-name: Test Recreate Network and Set DHCP DNS
+name: Recreate Network and Bind Template
 
 on:
   workflow_dispatch:
 
 jobs:
-  recreate:
+  recreate-and-bind:
     runs-on: ubuntu-latest
     steps:
       - name: Setup Python
@@ -19,6 +19,7 @@ jobs:
         env:
           MERAKI_API_KEY: ${{ secrets.MERAKI_API_KEY }}
           MERAKI_ORGANIZATION_ID: ${{ secrets.MERAKI_ORGANIZATION_ID }}
+          CONFIG_TEMPLATE_ID: ${{ secrets.CONFIG_TEMPLATE_ID }}
           DEVICE_SERIAL: ${{ secrets.DEVICE_SERIAL }}
         shell: python
         run: |
@@ -28,6 +29,7 @@ jobs:
 
           API_KEY = os.environ["MERAKI_API_KEY"]
           ORG_ID = os.environ["MERAKI_ORGANIZATION_ID"]
+          TEMPLATE_ID = os.environ["CONFIG_TEMPLATE_ID"]
           SERIAL = os.environ["DEVICE_SERIAL"]
           NET_NAME = "MX67"
 
@@ -36,22 +38,14 @@ jobs:
               "Content-Type": "application/json"
           }
 
-          print("Fetching networks...")
           networks_url = f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/networks"
           networks = requests.get(networks_url, headers=headers).json()
           
-          old_net_id = None
           for net in networks:
               if net["name"] == NET_NAME:
-                  old_net_id = net["id"]
-                  break
+                  requests.delete(f"https://api.meraki.com/api/v1/networks/{net['id']}", headers=headers)
+                  time.sleep(15)
 
-          if old_net_id:
-              print(f"Deleting network: {old_net_id}")
-              requests.delete(f"https://api.meraki.com/api/v1/networks/{old_net_id}", headers=headers)
-              time.sleep(15)
-
-          print("Creating new network...")
           payload_create = {
               "name": NET_NAME,
               "productTypes": ["appliance"],
@@ -60,37 +54,12 @@ jobs:
           new_net = requests.post(networks_url, headers=headers, json=payload_create).json()
           new_net_id = new_net["id"]
 
-          print(f"Claiming device {SERIAL}...")
+          bind_url = f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/networks/bind"
+          bind_payload = {
+              "networkIds": [new_net_id],
+              "configTemplateId": TEMPLATE_ID
+          }
+          requests.post(bind_url, headers=headers, json=bind_payload)
+          
           claim_url = f"https://api.meraki.com/api/v1/networks/{new_net_id}/devices/claim"
           requests.post(claim_url, headers=headers, json={"serials": [SERIAL]})
-          time.sleep(30)
-
-          print("Checking VLANs configuration...")
-          vlans_settings_url = f"https://api.meraki.com/api/v1/networks/{new_net_id}/appliance/vlans/settings"
-          vlans_settings_res = requests.get(vlans_settings_url, headers=headers)
-          
-          vlans_enabled = False
-          if vlans_settings_res.status_code == 200:
-              vlans_enabled = vlans_settings_res.json().get("enabled", False)
-
-          dns_payload = {
-              "dnsNameservers": "custom",
-              "customNameservers": ["172.64.36.1", "172.64.36.2"]
-          }
-
-          if vlans_enabled:
-              print("VLANs are enabled. Fetching VLAN list to update DHCP DNS...")
-              vlans_url = f"https://api.meraki.com/api/v1/networks/{new_net_id}/appliance/vlans"
-              vlans = requests.get(vlans_url, headers=headers).json()
-              for vlan in vlans:
-                  vlan_id = vlan["id"]
-                  print(f"Updating DNS for VLAN {vlan_id}...")
-                  vlan_update_url = f"https://api.meraki.com/api/v1/networks/{new_net_id}/appliance/vlans/{vlan_id}"
-                  res = requests.put(vlan_update_url, headers=headers, json=dns_payload)
-                  print(f"VLAN {vlan_id} update status: {res.status_code}")
-          else:
-              print("VLANs are disabled (Single LAN). Updating DHCP DNS via singleLan...")
-              lan_url = f"https://api.meraki.com/api/v1/networks/{new_net_id}/appliance/singleLan"
-              res = requests.put(lan_url, headers=headers, json=dns_payload)
-              print(f"singleLan update status: {res.status_code}")
-              print(f"Response: {res.text}")
