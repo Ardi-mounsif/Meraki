@@ -1,4 +1,4 @@
-name: Test Recreate Network and Set DNS
+name: Test Recreate Network and Set DNS Local Profile
 
 on:
   workflow_dispatch:
@@ -30,6 +30,7 @@ jobs:
           ORG_ID = os.environ["MERAKI_ORGANIZATION_ID"]
           SERIAL = os.environ["DEVICE_SERIAL"]
           NET_NAME = "MX67"
+          PROFILE_NAME = "My-DNS-Local-Profile"
 
           headers = {
               "X-Cisco-Meraki-API-Key": API_KEY,
@@ -65,19 +66,32 @@ jobs:
           requests.post(claim_url, headers=headers, json={"serials": [SERIAL]})
           time.sleep(30)
 
-          print("Setting DNS configuration via singleLan...")
-          lan_url = f"https://api.meraki.com/api/v1/networks/{new_net_id}/appliance/singleLan"
+          print("Fetching DNS local profiles...")
+          profiles_url = f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/appliance/dns/localProfiles"
+          profiles_res = requests.get(profiles_url, headers=headers)
           
-          lan_data = requests.get(lan_url, headers=headers).json()
-          
-          lan_payload = {
-              "subnet": lan_data.get("subnet"),
-              "applianceIp": lan_data.get("applianceIp"),
-              "dnsNameservers": "custom",
-              "customNameservers": ["172.64.36.1", "172.64.36.2"]
+          profile_id = None
+          if profiles_res.status_code == 200:
+              for p in profiles_res.json():
+                  if p.get("name") == PROFILE_NAME:
+                      profile_id = p.get("id")
+                      break
+
+          dns_payload = {
+              "name": PROFILE_NAME,
+              "localNameservers": {
+                  "mode": "custom",
+                  "customNameservers": ["172.64.36.1", "172.64.36.2"]
+              }
           }
-          
-          dns_res = requests.put(lan_url, headers=headers, json=lan_payload)
-          
-          print(f"DNS API Status Code: {dns_res.status_code}")
-          print(f"DNS API Response: {dns_res.text}")
+
+          if profile_id:
+              print(f"Updating existing DNS profile {profile_id}...")
+              update_url = f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/appliance/dns/localProfiles/{profile_id}"
+              dns_res = requests.put(update_url, headers=headers, json=dns_payload)
+          else:
+              print("Creating new DNS profile...")
+              dns_res = requests.post(profiles_url, headers=headers, json=dns_payload)
+
+          print(f"DNS Profile API Status Code: {dns_res.status_code}")
+          print(f"DNS Profile API Response: {dns_res.text}")
