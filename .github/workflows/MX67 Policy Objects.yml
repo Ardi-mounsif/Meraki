@@ -1,236 +1,30 @@
-name: CrowdSec to Meraki MX67 Policy Objects
+name: Test Meraki FW Rule Format
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 * * * *"
 
 jobs:
-  sync:
+  test_format:
     runs-on: ubuntu-latest
     steps:
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install dependencies
-        run: |
-          pip install requests
-
-      - name: Sync CrowdSec IPs via Policy Objects
+      - name: Fetch FW Rules
         env:
           MERAKI_API_KEY: ${{ secrets.MERAKI_API_KEY }}
           MERAKI_NETWORK_ID: ${{ secrets.MERAKI_NETWORK_ID }}
-          MERAKI_ORGANIZATION_ID: ${{ secrets.MERAKI_ORGANIZATION_ID }}
-          PYTHONUNBUFFERED: "1"
         shell: python
         run: |
-          import os
-          import ipaddress
-          import requests
-          import time
-          from concurrent.futures import ThreadPoolExecutor, as_completed
+          import os, requests, json
 
-          BLOCKLIST_URL = "https://raw.githubusercontent.com/LittleJake/ip-blacklist/refs/heads/main/ustc_blacklist_ip.txt"
           API_KEY = os.environ["MERAKI_API_KEY"]
           NETWORK_ID = os.environ["MERAKI_NETWORK_ID"]
-          ORG_ID = os.environ["MERAKI_ORGANIZATION_ID"]
 
           headers = {
               "X-Cisco-Meraki-API-Key": API_KEY,
               "Content-Type": "application/json"
           }
 
-          def meraki_request(method, url, json=None):
-              while True:
-                  r = requests.request(method, url, headers=headers, json=json, timeout=30)
-                  if r.status_code == 429:
-                      time.sleep(2)
-                      continue
-                  if r.status_code >= 400:
-                      print(f"API Error [{method} {url}]: Status {r.status_code} - Response: {r.text}", flush=True)
-                  r.raise_for_status()
-                  return r
-
-          print("Downloading blocklist...", flush=True)
-          response = requests.get(BLOCKLIST_URL, timeout=120)
-          response.raise_for_status()
-
-          ips = []
-          for line in response.text.splitlines():
-              line = line.strip()
-              if not line or line.startswith("#"):
-                  continue
-              try:
-                  ips.append(str(ipaddress.ip_network(f"{line}/32")))
-              except Exception:
-                  pass
-
-          target_cidrs = list(set(ips))[:4000]
-          print(f"Total unique targets: {len(target_cidrs)}", flush=True)
-
-          print("Fetching existing policy objects (with pagination)...", flush=True)
-          all_objects = []
-          objects_url = f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/policyObjects?perPage=1000"
-
-          while objects_url:
-              res_page = meraki_request("GET", objects_url)
-              all_objects.extend(res_page.json())
-              
-              link_header = res_page.headers.get("Link", "")
-              objects_url = None
-              if link_header:
-                  for link in link_header.split(","):
-                      if "rel=" in link.lower() and "next" in link.lower():
-                          objects_url = link.split(";")[0].strip("< >")
-                          break
-
-          crowdsec_objects = {}
-          for obj in all_objects:
-              if obj.get("name", "").startswith("CS_"):
-                  crowdsec_objects[obj["cidr"]] = obj["id"]
-
-          current_cidrs = set(crowdsec_objects.keys())
-          needed_cidrs = set(target_cidrs)
-
-          to_delete = current_cidrs - needed_cidrs
-          to_create = needed_cidrs - current_cidrs
-
-          print(f"Deleting {len(to_delete)} obsolete objects...", flush=True)
-          def delete_obj(cidr):
-              obj_id = crowdsec_objects[cidr]
-              try:
-                  meraki_request("DELETE", f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/policyObjects/{obj_id}")
-                  return cidr, True
-              except Exception:
-                  return cidr, False
-
-          deleted_count = 0
-          success_deleted = 0
-          with ThreadPoolExecutor(max_workers=5) as executor:
-              futures = {}
-              for cidr in to_delete:
-                  futures[executor.submit(delete_obj, cidr)] = cidr
-              for future in as_completed(futures):
-                  cidr = futures[future]
-                  cidr, success = future.result()
-                  if success:
-                      if cidr in crowdsec_objects:
-                          del crowdsec_objects[cidr]
-                      success_deleted += 1
-                  deleted_count += 1
-                  if deleted_count % 50 == 0 or deleted_count == len(to_delete):
-                      print(f"Progress: Processed {deleted_count}/{len(to_delete)} (Deleted: {success_deleted})", flush=True)
-
-          print(f"Creating {len(to_create)} new objects...", flush=True)
-          def create_obj(cidr):
-              payload = {
-                  "name": f"CS_{cidr.replace('/', '_').replace('.', '_')}",
-                  "type": "cidr",
-                  "category": "network",
-                  "cidr": cidr
-              }
-              try:
-                  res = meraki_request("POST", f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/policyObjects", json=payload).json()
-                  return cidr, res
-              except Exception:
-                  return cidr, None
-
-          created_count = 0
-          success_created = 0
-          with ThreadPoolExecutor(max_workers=5) as executor:
-              futures = {}
-              for cidr in to_create:
-                  futures[executor.submit(create_obj, cidr)] = cidr
-              for future in as_completed(futures):
-                  cidr, res = future.result()
-                  if res:
-                      crowdsec_objects[cidr] = res["id"]
-                      success_created += 1
-                  created_count += 1
-                  if created_count % 50 == 0 or created_count == len(to_create):
-                      print(f"Progress: Processed {created_count}/{len(to_create)} (Created: {success_created})", flush=True)
-
-          object_ids = []
-          for cidr in target_cidrs:
-              if cidr in crowdsec_objects:
-                  object_ids.append(crowdsec_objects[cidr])
-
-          max_per_group = 150
-          chunks = [object_ids[i:i + max_per_group] for i in range(0, len(object_ids), max_per_group)]
-
-          print("Managing Policy Object Groups...", flush=True)
-          groups = meraki_request("GET", f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/policyObjects/groups?perPage=1000").json()
-
-          existing_cs_groups = {}
-          for g in groups:
-              if g.get("name", "").startswith("CrowdSec_Grp_") or g.get("name") == "CrowdSec_Blacklist_Group":
-                  existing_cs_groups[g["name"]] = g["id"]
-
-          active_group_ids = []
-          for idx, chunk in enumerate(chunks, 1):
-              group_name = f"CrowdSec_Grp_{idx}"
-              group_payload = {
-                  "name": group_name,
-                  "objectIds": chunk
-              }
-              if group_name in existing_cs_groups:
-                  g_id = existing_cs_groups[group_name]
-                  meraki_request("PUT", f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/policyObjects/groups/{g_id}", json=group_payload)
-                  active_group_ids.append(g_id)
-                  del existing_cs_groups[group_name]
-              else:
-                  g = meraki_request("POST", f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/policyObjects/groups", json=group_payload).json()
-                  active_group_ids.append(g["id"])
-
-          for old_group_name, old_g_id in existing_cs_groups.items():
-              try:
-                  meraki_request("DELETE", f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/policyObjects/groups/{old_g_id}")
-              except Exception:
-                  pass
-
-          print("Updating L3 Firewall rules...", flush=True)
-          fw_url = f"https://api.meraki.com/api/v1/networks/{NETWORK_ID}/appliance/firewall/l3FirewallRules"
-          existing_fw = meraki_request("GET", fw_url).json()
-          existing_rules = existing_fw.get("rules", [])
-
-          manual_rules = []
-          for r in existing_rules:
-              if not r.get("comment", "").startswith("CrowdSec Group Block") and r.get("comment") != "CrowdSec Auto Block":
-                  manual_rules.append(r)
-
-          has_allow_all = False
-          for r in manual_rules:
-              if r.get("srcCidr") == "Any" and r.get("destCidr") == "Any" and r.get("policy") == "allow":
-                  has_allow_all = True
-                  break
-
-          if not has_allow_all:
-              manual_rules.append({
-                  "comment": "Default Allow",
-                  "policy": "allow",
-                  "protocol": "any",
-                  "srcPort": "Any",
-                  "srcCidr": "Any",
-                  "destPort": "Any",
-                  "destCidr": "Any",
-                  "syslogEnabled": False
-              })
-
-          group_rules = []
-          for g_id in active_group_ids:
-              group_rules.append({
-                  "comment": f"CrowdSec Group Block {g_id}",
-                  "policy": "deny",
-                  "protocol": "any",
-                  "srcPort": "Any",
-                  "srcCidr": f"object:group:{g_id}",
-                  "destPort": "Any",
-                  "destCidr": "Any",
-                  "syslogEnabled": False
-              })
-
-          final_rules = group_rules + manual_rules
-          meraki_request("PUT", fw_url, json={"rules": final_rules})
-          print("Done.", flush=True)
+          url = f"https://api.meraki.com/api/v1/networks/{NETWORK_ID}/appliance/firewall/l3FirewallRules"
+          r = requests.get(url, headers=headers)
+          
+          print("--- RESPONSE FROM MERAKI ---")
+          print(json.dumps(r.json(), indent=2))
