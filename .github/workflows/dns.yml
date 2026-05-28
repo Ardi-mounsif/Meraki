@@ -6,76 +6,33 @@ on:
 jobs:
   update-dns:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
       - name: Install dependencies
+        run: pip install meraki
+      - name: Run script
+        env:
+          MERAKI_API_KEY: ${{ secrets.MERAKI_API_KEY }}
+        shell: python
         run: |
-          pip install meraki
-
-      - name: Create script
-        run: |
-          cat > dns_update.py << 'EOF'
           import meraki
           import os
 
           API_KEY = os.getenv("MERAKI_API_KEY")
-          # التعديل هنا: ليستة ديال الآي بيات
-          DNS_SERVERS = ["1.1.1.1", "8.8.8.8"]
-
-          dashboard = meraki.DashboardAPI(
-              API_KEY,
-              suppress_logging=True
-          )
-
+          dashboard = meraki.DashboardAPI(API_KEY, suppress_logging=True)
           orgs = dashboard.organizations.getOrganizations()
 
           for org in orgs:
-              print(f"\nORG: {org['name']}")
-              networks = dashboard.organizations.getOrganizationNetworks(
-                  org['id'],
-                  total_pages='all'
-              )
-
+              networks = dashboard.organizations.getOrganizationNetworks(org['id'])
               for net in networks:
-                  if 'appliance' not in net.get('productTypes', []):
-                      continue
-
-                  network_id = net['id']
-                  print(f"\nNetwork: {net['name']}")
-
-                  try:
-                      settings = dashboard.appliance.getNetworkApplianceVlansSettings(network_id)
-                      if not settings.get("vlansEnabled"):
-                          print("VLANs disabled")
-                          continue
-
-                      vlans = dashboard.appliance.getNetworkApplianceVlans(network_id)
-
-                      for vlan in vlans:
-                          vlan_id = vlan['id']
-                          # التعديل هنا: تحديد نوع الـ DNS والآي بيات
-                          dashboard.appliance.updateNetworkApplianceVlan(
-                              network_id,
-                              vlan_id,
-                              dnsNameservers="custom",
-                              dnsCustomNameservers=DNS_SERVERS
-                          )
-                          print(f"Updated VLAN {vlan_id}")
-
-                  except Exception as e:
-                      print(f"ERROR: {e}")
-          EOF
-
-      - name: Run script
-        env:
-          MERAKI_API_KEY: ${{ secrets.MERAKI_API_KEY }}
-        run: |
-          python dns_update.py
+                  if net['name'] == 'MX67':
+                      # هنا كنبذلو لـ Single LAN عوض VLANs
+                      dashboard.appliance.updateNetworkApplianceSingleLan(
+                          net['id'],
+                          dnsNameservers="custom",
+                          dnsCustomNameservers=["1.1.1.1", "8.8.8.8"]
+                      )
+                      print(f"Updated Network {net['name']} to custom DNS")
