@@ -49,6 +49,8 @@ jobs:
                   if r.status_code == 429:
                       time.sleep(2)
                       continue
+                  if r.status_code >= 400:
+                      print(f"API Error [{method} {url}]: Status {r.status_code} - Response: {r.text}", flush=True)
                   r.raise_for_status()
                   return r.json() if r.text else None
 
@@ -107,15 +109,17 @@ jobs:
                   return cidr, False
 
           deleted_count = 0
+          success_deleted = 0
           with ThreadPoolExecutor(max_workers=5) as executor:
               futures = {executor.submit(delete_obj, cidr): cidr for cidr in to_delete}
               for future in as_completed(futures):
                   cidr, success = future.result()
                   if success:
                       del crowdsec_objects[cidr]
+                      success_deleted += 1
                   deleted_count += 1
                   if deleted_count % 50 == 0 or deleted_count == len(to_delete):
-                      print(f"Progress: Deleted {deleted_count}/{len(to_delete)} objects", flush=True)
+                      print(f"Progress: Processed {deleted_count}/{len(to_delete)} (Deleted: {success_deleted})", flush=True)
 
           print(f"Creating {len(to_create)} new objects...", flush=True)
           def create_obj(cidr):
@@ -131,15 +135,17 @@ jobs:
                   return cidr, None
 
           created_count = 0
+          success_created = 0
           with ThreadPoolExecutor(max_workers=5) as executor:
               futures = {executor.submit(create_obj, cidr): cidr for cidr in to_create}
               for future in as_completed(futures):
                   cidr, res = future.result()
                   if res:
                       crowdsec_objects[cidr] = res["id"]
+                      success_created += 1
                   created_count += 1
                   if created_count % 50 == 0 or created_count == len(to_create):
-                      print(f"Progress: Created {created_count}/{len(to_create)} objects", flush=True)
+                      print(f"Progress: Processed {created_count}/{len(to_create)} (Created: {success_created})", flush=True)
 
           object_ids = [crowdsec_objects[cidr] for cidr in target_cidrs if cidr in crowdsec_objects]
           
