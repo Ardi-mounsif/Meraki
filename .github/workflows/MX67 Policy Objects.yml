@@ -133,7 +133,7 @@ jobs:
 
           created_count = 0
           with ThreadPoolExecutor(max_workers=5) as executor:
-              futures = {executor.submit(create_obj, cidr): cidr for cidr in to_create}
+              futures = {executor.submit(create_obj, cidr): cidr for cid r in to_create}
               for future in as_completed(futures):
                   cidr, res = future.result()
                   if res:
@@ -142,27 +142,36 @@ jobs:
                   if created_count % 50 == 0 or created_count == len(to_create):
                       print(f"Progress: Created {created_count}/{len(to_create)} objects", flush=True)
 
-          print("Managing Policy Object Group...", flush=True)
-          groups = meraki_request("GET", f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/policyObjects/groups?perPage=1000")
-          group_id = None
-          for g in groups:
-              if g["name"] == "CrowdSec_Blacklist_Group":
-                  group_id = g["id"]
-                  break
-
           object_ids = [crowdsec_objects[cidr] for cidr in target_cidrs if cidr in crowdsec_objects]
-          object_ids = object_ids[:4000]
+          
+          max_per_group = 200
+          chunks = [object_ids[i:i + max_per_group] for i in range(0, len(object_ids), max_per_group)]
 
-          group_payload = {
-              "name": "CrowdSec_Blacklist_Group",
-              "objectIds": object_ids
-          }
+          print("Managing Policy Object Groups...", flush=True)
+          groups = meraki_request("GET", f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/policyObjects/groups?perPage=1000")
+          existing_cs_groups = {g["name"]: g["id"] for g in groups if g["name"].startswith("CrowdSec_Grp_") or g["name"] == "CrowdSec_Blacklist_Group"}
 
-          if group_id:
-              meraki_request("PUT", f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/policyObjects/groups/{group_id}", json=group_payload)
-          else:
-              g = meraki_request("POST", f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/policyObjects/groups", json=group_payload)
-              group_id = g["id"]
+          active_group_ids = []
+          for idx, chunk in enumerate(chunks, 1):
+              group_name = f"CrowdSec_Grp_{idx}"
+              group_payload = {
+                  "name": group_name,
+                  "objectIds": chunk
+              }
+              if group_name in existing_cs_groups:
+                  g_id = existing_cs_groups[group_name]
+                  meraki_request("PUT", f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/policyObjects/groups/{g_id}", json=group_payload)
+                  active_group_ids.append(g_id)
+                  del existing_cs_groups[group_name]
+              else:
+                  g = meraki_request("POST", f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/policyObjects/groups", json=group_payload)
+                  active_group_ids.append(g["id"])
+
+          for old_group_name, old_g_id in existing_cs_groups.items():
+              try:
+                  meraki_request("DELETE", f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/policyObjects/groups/{old_g_id}")
+              except Exception:
+                  pass
 
           print("Updating L3 Firewall rules...", flush=True)
           fw_url = f"https://api.meraki.com/api/v1/networks/{NETWORK_ID}/appliance/firewall/l3FirewallRules"
@@ -171,7 +180,7 @@ jobs:
 
           manual_rules = [
               r for r in existing_rules 
-              if r.get("comment") != "CrowdSec Auto Block" and r.get("comment") != "CrowdSec Group Block"
+              if not r.get("comment", "").startswith("CrowdSec Group Block") and r.get("comment") != "CrowdSec Auto Block"
           ]
 
           has_allow_all = any(
@@ -193,17 +202,19 @@ jobs:
                   "syslogEnabled": False
               })
 
-          group_rule = {
-              "comment": "CrowdSec Group Block",
-              "policy": "deny",
-              "protocol": "any",
-              "srcPort": "Any",
-              "srcCidr": f"object:group:{group_id}",
-              "destPort": "Any",
-              "destCidr": "Any",
-              "syslogEnabled": False
-          }
+          group_rules = []
+          for g_id in active_group_ids:
+              group_rules.append({
+                  "comment": f"CrowdSec Group Block {g_id}",
+                  "policy": "deny",
+                  "protocol": "any",
+                  "srcPort": "Any",
+                  "srcCidr": f"object:group:{g_id}",
+                  "destPort": "Any",
+                  "destCidr": "Any",
+                  "syslogEnabled": False
+              })
 
-          final_rules = [group_rule] + manual_rules
+          final_rules = group_rules + manual_rules
           meraki_request("PUT", fw_url, json={"rules": final_rules})
           print("Done.", flush=True)
