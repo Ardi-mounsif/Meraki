@@ -125,7 +125,7 @@ jobs:
                       print(f"Progress: Created {created_count}/{len(to_create)} objects", flush=True)
 
           print("Managing Policy Object Group...", flush=True)
-          groups = meraki_request("GET", f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/policyObjectGroups")
+          groups = meraki_request("GET", f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/policyObjects/groups")
           group_id = None
           for g in groups:
               if g["name"] == "CrowdSec_Blacklist_Group":
@@ -141,9 +141,9 @@ jobs:
           }
 
           if group_id:
-              meraki_request("PUT", f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/policyObjectGroups/{group_id}", json=group_payload)
+              meraki_request("PUT", f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/policyObjects/groups/{group_id}", json=group_payload)
           else:
-              g = meraki_request("POST", f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/policyObjectGroups", json=group_payload)
+              g = meraki_request("POST", f"https://api.meraki.com/api/v1/organizations/{ORG_ID}/policyObjects/groups", json=group_payload)
               group_id = g["id"]
 
           print("Updating L3 Firewall rules...", flush=True)
