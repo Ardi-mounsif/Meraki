@@ -3,7 +3,7 @@ name: CrowdSec to Meraki MX67 Policy Objects
 on:
   workflow_dispatch:
   schedule:
-   - cron: "0 */6 * * *"
+    - cron: "0 */6 * * *"
 
 jobs:
   sync:
@@ -23,6 +23,7 @@ jobs:
           MERAKI_API_KEY: ${{ secrets.MERAKI_API_KEY }}
           MERAKI_NETWORK_ID: ${{ secrets.MERAKI_NETWORK_ID }}
           MERAKI_ORGANIZATION_ID: ${{ secrets.MERAKI_ORGANIZATION_ID }}
+          MERAKI_TEMPLATE_ID: ${{ secrets.MERAKI_TEMPLATE_ID }}
           PYTHONUNBUFFERED: "1"
         shell: python
         run: |
@@ -36,6 +37,7 @@ jobs:
           API_KEY = os.environ["MERAKI_API_KEY"]
           NETWORK_ID = os.environ["MERAKI_NETWORK_ID"]
           ORG_ID = os.environ["MERAKI_ORGANIZATION_ID"]
+          TEMPLATE_ID = os.environ["MERAKI_TEMPLATE_ID"]
 
           headers = {
               "X-Cisco-Meraki-API-Key": API_KEY,
@@ -190,8 +192,8 @@ jobs:
               except Exception:
                   pass
 
-          print("Updating L3 Firewall rules...", flush=True)
-          fw_url = f"https://api.meraki.com/api/v1/networks/{NETWORK_ID}/appliance/firewall/l3FirewallRules"
+          print("Updating L3 Firewall rules directly on the template...", flush=True)
+          fw_url = f"https://api.meraki.com/api/v1/networks/{TEMPLATE_ID}/appliance/firewall/l3FirewallRules"
           existing_fw = meraki_request("GET", fw_url).json()
           existing_rules = existing_fw.get("rules", [])
 
