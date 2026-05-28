@@ -29,15 +29,17 @@ jobs:
               networks = dashboard.organizations.getOrganizationNetworks(org['id'])
               for net in networks:
                   if net['name'] == 'MX67':
-                      # 1. جيب الاعدادات الحالية باش تاخد السابنيت والآي بي
+                      # 1. جيب الإعدادات الحالية
                       current = dashboard.appliance.getNetworkApplianceSingleLan(net['id'])
                       
-                      # 2. استعمل هاد الاعدادات ف التحديث باش ميرَاكِي ما يعطيش غلط
+                      # 2. التحديث مع التأكد من إدراج كافة الإعدادات الضرورية
                       dashboard.appliance.updateNetworkApplianceSingleLan(
                           net['id'],
                           subnet=current['subnet'],
                           applianceIp=current['applianceIp'],
+                          dhcpHandling=current.get('dhcpHandling', 'Run a DHCP server'),
+                          dhcpLeaseTime=current.get('dhcpLeaseTime', '1 day'),
                           dnsNameservers="custom",
                           dnsCustomNameservers=["1.1.1.1", "8.8.8.8"]
                       )
-                      print(f"Updated Network {net['name']} to custom DNS")
+                      print(f"Updated Network {net['name']} with forced DNS settings")
