@@ -2,7 +2,10 @@ name: Recreate Network
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 4 */15 * *'
+    - cron: '0 4 1,15 * *'
+
+jobs:
+  recreate:
 
 jobs:
   recreate:
